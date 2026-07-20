@@ -1,0 +1,6 @@
+{
+  "name": "AnimStudio",
+  "description": "A high-performance 3D/2D animation studio engine supporting custom object generation, interpolation, timeline editing, bone rigging, and skeletal structures.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
