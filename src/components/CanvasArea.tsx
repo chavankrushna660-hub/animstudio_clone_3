@@ -767,6 +767,7 @@ interface CanvasAreaProps {
   adaptiveSubdivisionEnabled: boolean;
   adaptiveSubdivisionPoints: number;
   fillToolColor?: string;
+  ignoreInnerDrawings?: boolean;
   brushSettings?: BrushSettings;
   setBrushSettings?: React.Dispatch<React.SetStateAction<BrushSettings>>;
   selectedDeformPointIndex?: number | null;
@@ -897,6 +898,7 @@ export default function CanvasArea({
   adaptiveSubdivisionEnabled,
   adaptiveSubdivisionPoints,
   fillToolColor = '#4CAF50',
+  ignoreInnerDrawings = true,
   brushSettings,
   setBrushSettings,
   selectedDeformPointIndex = null,
@@ -1951,23 +1953,75 @@ export default function CanvasArea({
               // Check if path is closed
               const isPathClosedLocal = (obj: VectorObject): boolean => {
                 if (obj.type === 'shape') return true;
+                if (obj.type === 'image') return false;
                 if (!obj.points || obj.points.length < 3) return false;
                 const first = obj.points[0];
                 const last = obj.points[obj.points.length - 1];
                 const dx = first.x - last.x;
                 const dy = first.y - last.y;
-                return Math.sqrt(dx * dx + dy * dy) < 15;
+                return Math.sqrt(dx * dx + dy * dy) < 35; // increased threshold for easier click closed path filling!
               };
 
               const isClosed = isPathClosedLocal(clickedObj);
-              setObjects(prev => ({
-                ...prev,
-                [clickedObj.id]: {
-                  ...prev[clickedObj.id],
-                  fillColor: isClosed ? fillToolColor : prev[clickedObj.id].fillColor,
-                  strokeColor: !isClosed ? fillToolColor : prev[clickedObj.id].strokeColor
+              
+              setObjects(prev => {
+                const updated = { ...prev };
+                const color = fillToolColor;
+
+                // 1. Fill clicked drawing itself
+                updated[clickedObj.id] = {
+                  ...clickedObj,
+                  fillColor: isClosed ? color : clickedObj.fillColor,
+                  strokeColor: !isClosed ? color : clickedObj.strokeColor
+                };
+
+                // 2. Overlap detection
+                const clickedBounds = calculateBoundingBox(clickedObj.points || []);
+                const otherDrawings = (Object.values(prev) as VectorObject[]).filter(
+                  o => o.id !== clickedObj.id && 
+                       o.layerId === clickedObj.layerId && 
+                       !o.isHidden && 
+                       !o.isLocked && 
+                       o.type !== '360_container'
+                );
+
+                otherDrawings.forEach(other => {
+                  const otherBounds = calculateBoundingBox(other.points || []);
+                  const overlap = !(clickedBounds.x + clickedBounds.width < otherBounds.x ||
+                                    otherBounds.x + otherBounds.width < clickedBounds.x ||
+                                    clickedBounds.y + clickedBounds.height < otherBounds.y ||
+                                    otherBounds.y + otherBounds.height < clickedBounds.y);
+                  if (overlap) {
+                    const otherClosed = isPathClosedLocal(other);
+                    updated[other.id] = {
+                      ...other,
+                      fillColor: otherClosed ? color : other.fillColor,
+                      strokeColor: !otherClosed ? color : other.strokeColor
+                    };
+                  }
+                });
+
+                // 3. Inner drawings detection
+                if (!ignoreInnerDrawings && isClosed) {
+                  otherDrawings.forEach(other => {
+                    const otherBounds = calculateBoundingBox(other.points || []);
+                    const isInside = (otherBounds.x >= clickedBounds.x && 
+                                      otherBounds.y >= clickedBounds.y && 
+                                      otherBounds.x + otherBounds.width <= clickedBounds.x + clickedBounds.width && 
+                                      otherBounds.y + otherBounds.height <= clickedBounds.y + clickedBounds.height);
+                    if (isInside) {
+                      const otherClosed = isPathClosedLocal(other);
+                      updated[other.id] = {
+                        ...other,
+                        fillColor: otherClosed ? color : other.fillColor,
+                        strokeColor: !otherClosed ? color : other.strokeColor
+                      };
+                    }
+                  });
                 }
-              }));
+
+                return updated;
+              });
               historyPush();
             }
           } else {
@@ -4248,6 +4302,27 @@ export default function CanvasArea({
           }
           ctx.clip('evenodd');
         });
+      }
+
+      // Apply non-destructive keep-only clipping for separated lasso regions (only rendering area inside lasso)
+      if (drawObj.keepOnlyLassoRegions && drawObj.keepOnlyLassoRegions.length > 0) {
+        const pivotForClip = drawObj.pivots?.[0] || { localX: 0, localY: 0 };
+        ctx.beginPath();
+        drawObj.keepOnlyLassoRegions.forEach((region, regionIdx) => {
+          const worldLassoPoints = region.localLassoPoints.map(p => localToWorld(p, drawObj.transform, pivotForClip));
+          if (worldLassoPoints.length > 0) {
+            if (regionIdx === 0) {
+              ctx.moveTo(worldLassoPoints[0].x, worldLassoPoints[0].y);
+            } else {
+              ctx.moveTo(worldLassoPoints[0].x, worldLassoPoints[0].y);
+            }
+            for (let i = 1; i < worldLassoPoints.length; i++) {
+              ctx.lineTo(worldLassoPoints[i].x, worldLassoPoints[i].y);
+            }
+            ctx.closePath();
+          }
+        });
+        ctx.clip();
       }
 
       // Calculate warped local points

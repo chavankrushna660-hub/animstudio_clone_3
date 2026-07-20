@@ -38,7 +38,7 @@ import RightPanel from './components/RightPanel';
 import CanvasArea from './components/CanvasArea';
 import Timeline from './components/Timeline';
 import { VectorObject, Bone, Layer, Frame, Point, RealismSettings, View360, BrushSettings, Transform, LiquifyBrushSettings } from './types';
-import { localToWorld, rotatePoint, calculateBoundingBox } from './utils/math';
+import { localToWorld, worldToLocal, rotatePoint, calculateBoundingBox } from './utils/math';
 import { 
   validateSimpleAuth, 
   saveUserAnimation, 
@@ -491,6 +491,7 @@ export default function App() {
   const [lassoMode, setLassoMode] = useState<'freehand' | 'pen'>('freehand');
   const [penLassoPoints, setPenLassoPoints] = useState<Point[]>([]);
   const [fillToolColor, setFillToolColor] = useState<string>('#4CAF50');
+  const [ignoreInnerDrawings, setIgnoreInnerDrawings] = useState<boolean>(true);
   const [hideLassoSelection, setHideLassoSelection] = useState<boolean>(false);
   const [hideFslSelection, setHideFslSelection] = useState<boolean>(false);
 
@@ -1834,6 +1835,222 @@ export default function App() {
     }
   };
 
+  const applyColorFillToId = (id: string, color: string, ignoreInner: boolean) => {
+    setObjects(prev => {
+      const clickedObj = prev[id];
+      if (!clickedObj) return prev;
+
+      const isPathClosedLocal = (obj: VectorObject): boolean => {
+        if (obj.type === 'shape') return true;
+        if (obj.type === 'image') return false;
+        if (!obj.points || obj.points.length < 3) return false;
+        const first = obj.points[0];
+        const last = obj.points[obj.points.length - 1];
+        const dx = first.x - last.x;
+        const dy = first.y - last.y;
+        return Math.sqrt(dx * dx + dy * dy) < 35;
+      };
+
+      const isClosed = isPathClosedLocal(clickedObj);
+      const updated = { ...prev };
+
+      updated[id] = {
+        ...clickedObj,
+        fillColor: isClosed ? color : clickedObj.fillColor,
+        strokeColor: !isClosed ? color : clickedObj.strokeColor
+      };
+
+      const otherDrawings = (Object.values(prev) as VectorObject[]).filter(
+        o => o.id !== id && 
+             o.layerId === clickedObj.layerId && 
+             !o.isHidden && 
+             !o.isLocked && 
+             o.type !== '360_container'
+      );
+      const clickedBounds = calculateBoundingBox(clickedObj.points || []);
+      
+      otherDrawings.forEach(other => {
+        const otherBounds = calculateBoundingBox(other.points || []);
+        const overlap = !(clickedBounds.x + clickedBounds.width < otherBounds.x ||
+                          otherBounds.x + otherBounds.width < clickedBounds.x ||
+                          clickedBounds.y + clickedBounds.height < otherBounds.y ||
+                          otherBounds.y + otherBounds.height < clickedBounds.y);
+        if (overlap) {
+          const otherClosed = isPathClosedLocal(other);
+          updated[other.id] = {
+            ...other,
+            fillColor: otherClosed ? color : other.fillColor,
+            strokeColor: !otherClosed ? color : other.strokeColor
+          };
+        }
+      });
+
+      if (!ignoreInner && isClosed) {
+        otherDrawings.forEach(other => {
+          const otherBounds = calculateBoundingBox(other.points || []);
+          const isInside = (otherBounds.x >= clickedBounds.x && 
+                            otherBounds.y >= clickedBounds.y && 
+                            otherBounds.x + otherBounds.width <= clickedBounds.x + clickedBounds.width && 
+                            otherBounds.y + otherBounds.height <= clickedBounds.y + clickedBounds.height);
+          if (isInside) {
+            const otherClosed = isPathClosedLocal(other);
+            updated[other.id] = {
+              ...other,
+              fillColor: otherClosed ? color : other.fillColor,
+              strokeColor: !otherClosed ? color : other.strokeColor
+            };
+          }
+        });
+      }
+
+      return updated;
+    });
+  };
+
+  const applyColorFillToSelected = () => {
+    if (activeTool !== 'FIL') {
+      alert("Please select the Fill Tool (Paint Bucket) first.");
+      return;
+    }
+    if (!selectedObjectId) {
+      alert("Please select a drawing on the canvas first.");
+      return;
+    }
+    historyPush();
+    applyColorFillToId(selectedObjectId, fillToolColor, ignoreInnerDrawings);
+  };
+
+  const deleteLassoBatch = () => {
+    try {
+      if (!lassoPoints || lassoPoints.length < 3) {
+        alert("Please draw a closed lasso loop around the parts you want to delete.");
+        return;
+      }
+
+      const targets = (Object.values(objects) as VectorObject[]).filter(obj => {
+        if (obj.isHidden || obj.isLocked) return false;
+        if (obj.type === '360_container') return false;
+        
+        const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+        const worldPts = (obj.points || []).map(p => localToWorld(p, obj.transform, localPivot));
+        const boundsObj = calculateBoundingBox(worldPts);
+        const boundsLasso = calculateBoundingBox(lassoPoints);
+        
+        return !(boundsObj.x + boundsObj.width < boundsLasso.x ||
+                 boundsLasso.x + boundsLasso.width < boundsObj.x ||
+                 boundsObj.y + boundsObj.height < boundsLasso.y ||
+                 boundsLasso.y + boundsLasso.height < boundsObj.y);
+      });
+
+      if (targets.length === 0) {
+        alert("No intersecting drawings found inside the lasso area.");
+        return;
+      }
+
+      historyPush();
+
+      setObjects(prev => {
+        const updated = { ...prev };
+        targets.forEach(obj => {
+          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+          const localLassoPoints = lassoPoints.map(wp => worldToLocal(wp, obj.transform, localPivot));
+          
+          const currentHidden = obj.hiddenLassoRegions || [];
+          updated[obj.id] = {
+            ...obj,
+            hiddenLassoRegions: [...currentHidden, { localLassoPoints }]
+          };
+        });
+        return updated;
+      });
+
+      setLassoPoints([]);
+      alert(`Successfully deleted lassoed area from ${targets.length} drawings!`);
+    } catch (err: any) {
+      console.error("Lasso delete error:", err);
+      alert(`Failed to perform lasso delete: ${err.message || err}`);
+    }
+  };
+
+  const separateLassoBatch = () => {
+    try {
+      if (!lassoPoints || lassoPoints.length < 3) {
+        alert("Please draw a closed lasso loop around the area you wish to separate.");
+        return;
+      }
+
+      const targets = (Object.values(objects) as VectorObject[]).filter(obj => {
+        if (obj.isHidden || obj.isLocked) return false;
+        if (obj.type === '360_container') return false;
+        
+        const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+        const worldPts = (obj.points || []).map(p => localToWorld(p, obj.transform, localPivot));
+        const boundsObj = calculateBoundingBox(worldPts);
+        const boundsLasso = calculateBoundingBox(lassoPoints);
+        
+        return !(boundsObj.x + boundsObj.width < boundsLasso.x ||
+                 boundsLasso.x + boundsLasso.width < boundsObj.x ||
+                 boundsObj.y + boundsObj.height < boundsLasso.y ||
+                 boundsLasso.y + boundsLasso.height < boundsObj.y);
+      });
+
+      if (targets.length === 0) {
+        alert("No intersecting drawings found inside the lasso area to separate.");
+        return;
+      }
+
+      historyPush();
+
+      setObjects(prev => {
+        const updated = { ...prev };
+        targets.forEach((obj, index) => {
+          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+          const localLassoPoints = lassoPoints.map(wp => worldToLocal(wp, obj.transform, localPivot));
+          
+          const currentHidden = obj.hiddenLassoRegions || [];
+          updated[obj.id] = {
+            ...obj,
+            hiddenLassoRegions: [...currentHidden, { localLassoPoints }]
+          };
+
+          const newId = `obj_sep_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 5)}`;
+          const newPivots = obj.pivots.map(p => ({
+            ...p,
+            id: `pvt_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 5)}`
+          }));
+          const newPins = obj.pins ? obj.pins.map(p => ({
+            ...p,
+            id: `pvt_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 5)}`
+          })) : undefined;
+
+          const currentKeepOnly = obj.keepOnlyLassoRegions || [];
+
+          const separatedObj: VectorObject = {
+            ...obj,
+            id: newId,
+            name: `${obj.name}_separated`,
+            points: obj.points ? obj.points.map(p => ({ ...p })) : [],
+            subPaths: obj.subPaths ? obj.subPaths.map(path => path.map(p => ({ ...p }))) : undefined,
+            pivots: newPivots,
+            pins: newPins,
+            keepOnlyLassoRegions: [...currentKeepOnly, { localLassoPoints }],
+            parentId: null,
+            childrenIds: []
+          };
+
+          updated[newId] = separatedObj;
+        });
+        return updated;
+      });
+
+      setLassoPoints([]);
+      alert(`Successfully separated lassoed area from ${targets.length} drawings!`);
+    } catch (err: any) {
+      console.error("Lasso separation error:", err);
+      alert(`Failed to perform lasso separation: ${err.message || err}`);
+    }
+  };
+
   const handleUndo = () => {
     if (undoStack.length === 0) return;
     const previous = undoStack[undoStack.length - 1];
@@ -3104,6 +3321,9 @@ export default function App() {
           toolbarCollapsed={toolbarCollapsed}
           applyFillForever={applyFillForever}
           setApplyFillForever={setApplyFillForever}
+          ignoreInnerDrawings={ignoreInnerDrawings}
+          setIgnoreInnerDrawings={setIgnoreInnerDrawings}
+          applyColorFillToSelected={applyColorFillToSelected}
         />
 
         {/* Central Vector Canvas Area */}
@@ -3146,6 +3366,7 @@ export default function App() {
           adaptiveSubdivisionEnabled={adaptiveSubdivisionEnabled}
           adaptiveSubdivisionPoints={adaptiveSubdivisionPoints}
           fillToolColor={fillToolColor}
+          ignoreInnerDrawings={ignoreInnerDrawings}
           brushSettings={brushSettings}
           setBrushSettings={setBrushSettings}
           selectedDeformPointIndex={selectedDeformPointIndex}
@@ -3235,6 +3456,11 @@ export default function App() {
           setActiveContinuousDrawingId={setActiveContinuousDrawingId}
           lassoRestrictActive={lassoRestrictActive}
           setLassoRestrictActive={setLassoRestrictActive}
+          deleteLassoBatch={deleteLassoBatch}
+          separateLassoBatch={separateLassoBatch}
+          ignoreInnerDrawings={ignoreInnerDrawings}
+          setIgnoreInnerDrawings={setIgnoreInnerDrawings}
+          applyColorFillToSelected={applyColorFillToSelected}
         />
       </div>
 

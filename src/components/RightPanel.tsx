@@ -29,7 +29,8 @@ import {
   Info,
   Box,
   Palette,
-  MapPin
+  MapPin,
+  Scissors
 } from 'lucide-react';
 import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings } from '../types';
 import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint } from '../utils/math';
@@ -133,6 +134,11 @@ interface RightPanelProps {
   setActiveContinuousDrawingId?: (id: string | null) => void;
   lassoRestrictActive?: boolean;
   setLassoRestrictActive?: (active: boolean) => void;
+  deleteLassoBatch?: () => void;
+  separateLassoBatch?: () => void;
+  ignoreInnerDrawings?: boolean;
+  setIgnoreInnerDrawings?: React.Dispatch<React.SetStateAction<boolean>>;
+  applyColorFillToSelected?: () => void;
 }
 
 const isChildInsideParent = (
@@ -207,6 +213,11 @@ export default function RightPanel({
   setActiveContinuousDrawingId,
   lassoRestrictActive = false,
   setLassoRestrictActive,
+  deleteLassoBatch,
+  separateLassoBatch,
+  ignoreInnerDrawings = true,
+  setIgnoreInnerDrawings,
+  applyColorFillToSelected,
 }: RightPanelProps) {
   // Batch/Smart Controls check state
   const [smartCheckedIds, setSmartCheckedIds] = useState<{ [id: string]: boolean }>({});
@@ -300,10 +311,12 @@ export default function RightPanel({
         setGlobalLassoSelectedMap(map);
       }
     } else {
-      setGlobalLassoSelectedMap({});
+      if (Object.keys(globalLassoSelectedMap).length > 0) {
+        setGlobalLassoSelectedMap({});
+      }
     }
     prevLassoPointsLengthRef.current = lassoPoints ? lassoPoints.length : 0;
-  }, [lassoPoints]);
+  }, [lassoPoints, globalLassoSelectedMap]);
 
   const applyLassoTransformToAllFrames = (type: string, value: number) => {
     if (!lassoPoints || lassoPoints.length < 3) return;
@@ -2212,6 +2225,28 @@ export default function RightPanel({
                     </button>
                   </div>
                 )}
+
+                {!continuousDrawActive && selectedObject && selectedObject.type === 'stroke' && (
+                  <div className="bg-neutral-950/40 p-3 rounded-xl border border-neutral-850 space-y-2 animate-fade-in text-[10px] text-neutral-300 font-bold font-mono">
+                    <div className="flex items-center justify-between">
+                      <span className="text-neutral-400 font-bold">Selected Completed:</span>
+                      <span className="text-emerald-400 font-black">{selectedObject.name}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (setContinuousDrawActive && setActiveContinuousDrawingId) {
+                          setContinuousDrawActive(true);
+                          setActiveContinuousDrawingId(selectedObject.id);
+                        }
+                      }}
+                      className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-black uppercase text-xs rounded-xl tracking-wider shadow-lg shadow-emerald-500/10 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Feather className="w-3.5 h-3.5" />
+                      Edit / Resume Drawing
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2261,6 +2296,26 @@ export default function RightPanel({
                       CLEAR
                     </button>
                   </div>
+                </div>
+
+                {/* Lasso Delete and Lasso Separate col row */}
+                <div className="grid grid-cols-2 gap-2 pb-1.5">
+                  <button
+                    onClick={deleteLassoBatch}
+                    className="flex items-center justify-center gap-1.5 py-2 px-3 bg-rose-600/20 hover:bg-rose-600/35 text-rose-300 border border-rose-500/30 rounded-xl text-xs font-black uppercase tracking-wider transition-all font-mono shadow-lg shadow-black/20 cursor-pointer"
+                    title="Delete exact drawing part inside lasso area"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Lasso Delete
+                  </button>
+                  <button
+                    onClick={separateLassoBatch}
+                    className="flex items-center justify-center gap-1.5 py-2 px-3 bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-black uppercase tracking-wider transition-all font-mono shadow-lg shadow-black/20 cursor-pointer"
+                    title="Separate drawing part inside lasso as a new drawing"
+                  >
+                    <Scissors className="w-3.5 h-3.5" />
+                    Lasso Separate
+                  </button>
                 </div>
 
                 {/* Apply to All Frames toggle */}

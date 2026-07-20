@@ -186,6 +186,7 @@ export interface VectorObject {
   hiddenPoints?: number[];
   hiddenSubPaths?: { [subPathIdx: number]: number[] };
   hiddenLassoRegions?: { localLassoPoints: Point[] }[];
+  keepOnlyLassoRegions?: { localLassoPoints: Point[] }[];
   keepAttachedTo?: string | null; // Drawing ID to keep permanently attached
   attachedGroupId?: string; // Group ID for permanent relative move linking
   lassoFills?: { localLassoPoints: Point[], color: string }[]; // Sub-areas colored via lasso tool

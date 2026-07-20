@@ -23,7 +23,8 @@ import {
   Smile,
   Armchair,
   Copy,
-  PaintBucket
+  PaintBucket,
+  CheckSquare
 } from 'lucide-react';
 import { VectorObject, Layer } from '../types';
 import { getDailyLimitStatus } from '../utils/engine3D';
@@ -69,6 +70,9 @@ interface LeftPanelProps {
   toolbarCollapsed?: boolean;
   applyFillForever?: boolean;
   setApplyFillForever?: (val: boolean) => void;
+  ignoreInnerDrawings?: boolean;
+  setIgnoreInnerDrawings?: React.Dispatch<React.SetStateAction<boolean>>;
+  applyColorFillToSelected?: () => void;
 }
 
 export default function LeftPanel({
@@ -111,6 +115,9 @@ export default function LeftPanel({
   toolbarCollapsed = false,
   applyFillForever,
   setApplyFillForever,
+  ignoreInnerDrawings = true,
+  setIgnoreInnerDrawings,
+  applyColorFillToSelected,
 }: LeftPanelProps) {
   const [expandedNodes, setExpandedNodes] = useState<{ [id: string]: boolean }>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -619,6 +626,34 @@ export default function LeftPanel({
                     <div className="w-8 h-4 bg-neutral-850 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-neutral-500 after:border-neutral-400 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white" />
                   </label>
                 </div>
+
+                {/* Full Closed Fill Toggle */}
+                <div className="flex items-center justify-between py-1.5 bg-neutral-900/40 px-2 rounded-xl border border-neutral-800/40">
+                  <div className="flex flex-col">
+                    <span className="text-[9px] text-neutral-300 font-bold uppercase">Full Closed Fill</span>
+                    <span className="text-[8px] text-neutral-500">Fill nested inner shapes too</span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!ignoreInnerDrawings}
+                      onChange={(e) => setIgnoreInnerDrawings?.(!e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-8 h-4 bg-neutral-850 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-neutral-500 after:border-neutral-400 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white" />
+                  </label>
+                </div>
+
+                {/* One-Tap Apply Fill Button */}
+                <button
+                  type="button"
+                  onClick={applyColorFillToSelected}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-black uppercase text-[10px] rounded-xl tracking-wider shadow-lg shadow-emerald-500/10 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  title="Apply fill color to selected drawing immediately"
+                >
+                  <CheckSquare className="w-3.5 h-3.5" />
+                  Apply Fill to Selected
+                </button>
 
                 {/* Color Selection HUD */}
                 <div className="space-y-2">
