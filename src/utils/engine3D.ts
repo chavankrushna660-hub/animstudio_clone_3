@@ -766,7 +766,14 @@ export function extrude2DTo3D(
   const vertices: Vertex3D[] = [];
   const faces: Face3D[] = [];
 
-  if (!points || points.length < 2) {
+  // Limit input points to 120 points maximum using robust downsampling to prevent CPU hangs or crashes
+  let safePoints = points || [];
+  if (safePoints.length > 120) {
+    const step = Math.ceil(safePoints.length / 120);
+    safePoints = safePoints.filter((_, idx) => idx % step === 0);
+  }
+
+  if (safePoints.length < 2) {
     // Fallback cube if no valid points
     return {
       vertices: [
@@ -786,9 +793,9 @@ export function extrude2DTo3D(
   }
 
   // Filter duplicate consecutive points to prevent degenerate geometry
-  let cleanPts = points.filter((p, i) => {
+  let cleanPts = safePoints.filter((p, i) => {
     if (i === 0) return true;
-    const prev = points[i - 1];
+    const prev = safePoints[i - 1];
     return Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5;
   });
 

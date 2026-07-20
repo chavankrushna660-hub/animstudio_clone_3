@@ -587,20 +587,22 @@ export default function RightPanel({
   const [brushColor, setBrushColor] = useState('#10b981');
 
   const handleInitMeshColor = (obj: VectorObject, densityX: number, densityY: number) => {
+    const safeDensityX = Math.max(2, Math.min(25, densityX));
+    const safeDensityY = Math.max(2, Math.min(25, densityY));
     const bounds = calculateBoundingBox(obj.points.length > 0 ? obj.points : [{ x: -100, y: -100 }, { x: 100, y: 100 }]);
     const w = bounds.width || 200;
     const h = bounds.height || 200;
     const bx = bounds.x;
     const by = bounds.y;
 
-    const cellWidth = w / (densityX - 1);
-    const cellHeight = h / (densityY - 1);
+    const cellWidth = w / (safeDensityX - 1);
+    const cellHeight = h / (safeDensityY - 1);
 
     const points: ColorMeshPoint[] = [];
     const cells: ColorMeshCell[] = [];
 
-    for (let y = 0; y < densityY; y++) {
-      for (let x = 0; x < densityX; x++) {
+    for (let y = 0; y < safeDensityY; y++) {
+      for (let x = 0; x < safeDensityX; x++) {
         const px = bx + x * cellWidth;
         const py = by + y * cellHeight;
         points.push({
@@ -615,12 +617,12 @@ export default function RightPanel({
       }
     }
 
-    for (let y = 0; y < densityY - 1; y++) {
-      for (let x = 0; x < densityX - 1; x++) {
-        const topLeftIdx = y * densityX + x;
-        const topRightIdx = y * densityX + (x + 1);
-        const bottomRightIdx = (y + 1) * densityX + (x + 1);
-        const bottomLeftIdx = (y + 1) * densityX + x;
+    for (let y = 0; y < safeDensityY - 1; y++) {
+      for (let x = 0; x < safeDensityX - 1; x++) {
+        const topLeftIdx = y * safeDensityX + x;
+        const topRightIdx = y * safeDensityX + (x + 1);
+        const bottomRightIdx = (y + 1) * safeDensityX + (x + 1);
+        const bottomLeftIdx = (y + 1) * safeDensityX + x;
 
         cells.push({
           id: `mcl_cell_${x}_${y}`,
@@ -637,8 +639,8 @@ export default function RightPanel({
     }
 
     const smartMeshColor: SmartMeshColorState = {
-      densityX,
-      densityY,
+      densityX: safeDensityX,
+      densityY: safeDensityY,
       points,
       cells,
       pointSize: 20,
@@ -1381,12 +1383,14 @@ export default function RightPanel({
   // Mesh wrap generator helper
   const handleInitMesh = (densityX: number, densityY: number) => {
     if (!selectedObject) return;
+    const safeDensityX = Math.max(2, Math.min(25, densityX));
+    const safeDensityY = Math.max(2, Math.min(25, densityY));
     const bounds = calculateBoundingBox(selectedObject.points);
     const points: any[] = [];
-    const stepX = bounds.width / (densityX - 1);
-    const stepY = bounds.height / (densityY - 1);
-    for (let y = 0; y < densityY; y++) {
-      for (let x = 0; x < densityX; x++) {
+    const stepX = bounds.width / (safeDensityX - 1);
+    const stepY = bounds.height / (safeDensityY - 1);
+    for (let y = 0; y < safeDensityY; y++) {
+      for (let x = 0; x < safeDensityX; x++) {
         const px = bounds.x + x * stepX;
         const py = bounds.y + y * stepY;
         points.push({
@@ -1403,8 +1407,8 @@ export default function RightPanel({
     updateObject(selectedObject.id, {
       meshState: {
         active: true,
-        densityX,
-        densityY,
+        densityX: safeDensityX,
+        densityY: safeDensityY,
         points,
         originalPoints: JSON.parse(JSON.stringify(points)),
         pointSize: 30,
@@ -1458,13 +1462,15 @@ export default function RightPanel({
 
   const handleInitLattice = (densityX: number = 4, densityY: number = 4) => {
     if (!selectedObject || !selectedObject.meshState) return;
+    const safeDensityX = Math.max(2, Math.min(25, densityX));
+    const safeDensityY = Math.max(2, Math.min(25, densityY));
     const bounds = calculateBoundingBox(selectedObject.points);
-    const stepX = bounds.width / (densityX - 1);
-    const stepY = bounds.height / (densityY - 1);
+    const stepX = bounds.width / (safeDensityX - 1);
+    const stepY = bounds.height / (safeDensityY - 1);
     const latticePoints: any[] = [];
     
-    for (let y = 0; y < densityY; y++) {
-      for (let x = 0; x < densityX; x++) {
+    for (let y = 0; y < safeDensityY; y++) {
+      for (let x = 0; x < safeDensityX; x++) {
         const px = bounds.x + x * stepX;
         const py = bounds.y + y * stepY;
         latticePoints.push({

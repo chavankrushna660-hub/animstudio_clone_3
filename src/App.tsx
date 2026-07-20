@@ -52,6 +52,7 @@ import {
   incrementDailyLimit,
   extrude2DTo3D
 } from './utils/engine3D';
+import { safeJsonParse } from './utils/securityGuard';
 
 export function transformDeformPoint(
   orig: { x: number; y: number; z?: number },
@@ -158,13 +159,13 @@ const ADS_DATA: AdItem[] = [
   {
     id: 1,
     title: "Adsterra Display Banner",
-    tagline: "Premium High CPM Ad Unit #30203380",
+    tagline: "Premium High CPM Ad Unit #30347500",
     badge: "Premium Banner",
     actionText: "Visit Ads",
     bgColor: "from-indigo-950/40 to-blue-950/20",
     borderColor: "border-indigo-500/35",
     textColor: "text-indigo-400",
-    adKey: "3b74f090f064befb058515e368086175",
+    adKey: "ad94c23f3a1136f1022004bc27ce9d98",
     format: "iframe",
     height: 60,
     width: 468
@@ -172,26 +173,26 @@ const ADS_DATA: AdItem[] = [
   {
     id: 2,
     title: "Adsterra Native Recommendation",
-    tagline: "Dynamic Grid Ad Unit #30203378",
+    tagline: "Dynamic Grid Ad Unit #30347498",
     badge: "Native Ad",
     actionText: "Learn More",
     bgColor: "from-emerald-950/40 to-teal-950/20",
     borderColor: "border-emerald-500/35",
     textColor: "text-emerald-400",
-    scriptUrl: "https://pl30303877.effectivecpmnetwork.com/935bef08c988c2000100df96459b2487/invoke.js",
-    containerId: "container-935bef08c988c2000100df96459b2487",
+    scriptUrl: "https://sidewalkboiling.com/4bd5ce90cbeba06a602bd9cb71df2009/invoke.js",
+    containerId: "container-4bd5ce90cbeba06a602bd9cb71df2009",
     format: "script"
   },
   {
     id: 3,
     title: "Adsterra Vertical Skyscraper",
-    tagline: "Premium Vertical Banner 160x300",
+    tagline: "Premium Vertical Banner #30347501",
     badge: "Skyscraper",
     actionText: "Explore",
     bgColor: "from-amber-950/40 to-orange-950/20",
     borderColor: "border-amber-500/35",
     textColor: "text-amber-400",
-    adKey: "6407bfebf17c2bd4797b6b2fc6c370b2",
+    adKey: "d7bf8efe3e6db8991de45e352fb95bf9",
     format: "iframe",
     height: 300,
     width: 160
@@ -199,79 +200,76 @@ const ADS_DATA: AdItem[] = [
   {
     id: 4,
     title: "Adsterra Social Bar Overlay",
-    tagline: "Active Dynamic Notification Unit",
+    tagline: "Active Dynamic Notification Unit #30347499",
     badge: "Social Bar",
     actionText: "View",
     bgColor: "from-rose-950/40 to-pink-950/20",
     borderColor: "border-rose-500/35",
     textColor: "text-rose-400",
-    scriptUrl: "https://pl30303877.effectivecpmnetwork.com/df/17/95/df1795f51867881fe197297866204a48.js",
+    scriptUrl: "https://sidewalkboiling.com/a0/0d/e5/a00de53aadb43973cceb07c405222316.js",
     format: "script"
   },
   {
     id: 5,
     title: "Adsterra Popunder Engine",
-    tagline: "Optimized High Revenue Unit",
+    tagline: "Optimized High Revenue Unit #30347497",
     badge: "Popunder",
     actionText: "Details",
     bgColor: "from-purple-950/40 to-fuchsia-950/20",
     borderColor: "border-purple-500/35",
     textColor: "text-purple-400",
-    scriptUrl: "https://pl30303877.effectivecpmnetwork.com/df/f0/84/dff084256f85526d6cfc6857a375d4021.js",
+    scriptUrl: "https://sidewalkboiling.com/fc/64/ba/fc64ba6c8e73bd305d3e2b5feca7637c.js",
     format: "script"
   }
 ];
 
 function AdsterraIframe({ adKey, format, height, width, scriptUrl, containerId, align = 'bottom' }: { adKey?: string; format?: string; height?: number; width?: number; scriptUrl?: string; containerId?: string; key?: string | number; align?: 'top' | 'bottom' }) {
-  let srcDoc = "";
+  const [useLocal, setUseLocal] = useState(true);
 
-  const alignment = align === 'bottom' ? 'flex-end' : 'flex-start';
+  useEffect(() => {
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+    // If running on local or dev/preview, we must use local ads-helper.html directly to make sure they run in AI Studio preview.
+    const isDev = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.run.app') || hostname.includes('ais-dev') || hostname.includes('ais-pre');
+    
+    if (isDev) {
+      setUseLocal(true);
+    } else {
+      // In production/other environments, attempt to use the Vercel-hosted helper to count impressions for animastu.vercel.app.
+      // But we set up a quick ping fallback: if Vercel is unreachable or doesn't respond in 1.8 seconds, load locally so ads never break!
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        setUseLocal(true);
+      }, 1800);
 
-  if (format === 'iframe' && adKey) {
-    srcDoc = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body, html { margin: 0; padding: 0; overflow: hidden; display: flex; justify-content: center; align-items: ${alignment}; background: transparent; height: 100%; width: 100%; }
-        </style>
-      </head>
-      <body>
-        <script type="text/javascript">
-          atOptions = {
-            'key' : '${adKey}',
-            'format' : 'iframe',
-            'height' : ${height || 60},
-            'width' : ${width || 468},
-            'params' : {}
-          };
-        </script>
-        <script type="text/javascript" src="https://pl30303877.effectivecpmnetwork.com/${adKey}/invoke.js"></script>
-      </body>
-      </html>
-    `;
-  } else if (scriptUrl) {
-    srcDoc = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body, html { margin: 0; padding: 0; overflow: hidden; display: flex; justify-content: center; align-items: ${alignment}; background: transparent; height: 100%; width: 100%; }
-        </style>
-      </head>
-      <body>
-        ${containerId ? `<div id="${containerId}" style="width: 100%; height: 100%; display: flex; justify-content: center; align-items: ${alignment};"></div>` : ''}
-        <script async="async" data-cfasync="false" src="${scriptUrl}"></script>
-      </body>
-      </html>
-    `;
-  }
+      fetch('https://animastu.vercel.app/ads-helper.html', { method: 'HEAD', mode: 'no-cors', signal: controller.signal })
+        .then(() => {
+          clearTimeout(timeoutId);
+          setUseLocal(false);
+        })
+        .catch(() => {
+          clearTimeout(timeoutId);
+          setUseLocal(true);
+        });
+    }
+  }, []);
 
-  if (!srcDoc) return null;
+  const baseUrl = useLocal ? '/ads-helper.html' : 'https://animastu.vercel.app/ads-helper.html';
+  
+  const queryParams = new URLSearchParams();
+  if (adKey) queryParams.set('adKey', adKey);
+  if (format) queryParams.set('format', format);
+  if (height) queryParams.set('height', height.toString());
+  if (width) queryParams.set('width', width.toString());
+  if (scriptUrl) queryParams.set('scriptUrl', scriptUrl);
+  if (containerId) queryParams.set('containerId', containerId);
+  queryParams.set('align', align);
+
+  const finalUrl = `${baseUrl}?${queryParams.toString()}`;
 
   return (
     <iframe
-      srcDoc={srcDoc}
+      src={finalUrl}
       title={`Adsterra Ad ${adKey || 'Script'}`}
       width="100%"
       height="100%"
@@ -2557,7 +2555,8 @@ export default function App() {
   const pasteFrame = (index: number) => {
     const data = localStorage.getItem('copied_frame_data');
     if (data) {
-      const parsed = JSON.parse(data);
+      const parsed = safeJsonParse(data);
+      if (!parsed) return;
       setFrames(prev => {
         const updated = [...prev];
         updated[index].objects = parsed;
@@ -2657,7 +2656,11 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const project = JSON.parse(event.target?.result as string);
+        const project = safeJsonParse(event.target?.result as string);
+        if (!project) {
+          alert("Blocked corrupted or invalid payload structure for security protection.");
+          return;
+        }
         if (project.objects) setObjects(project.objects);
         if (project.bones) setBones(project.bones);
         if (project.frames) {

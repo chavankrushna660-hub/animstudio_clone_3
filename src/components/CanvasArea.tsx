@@ -4204,7 +4204,8 @@ export default function CanvasArea({
 
     // Draw active layer drawings in sorted order
     sortedObjects.forEach((obj) => {
-      const isDraftView = is360WizardActive && draft360Views.some(v => v.drawingId === obj.id);
+      try {
+        const isDraftView = is360WizardActive && draft360Views.some(v => v.drawingId === obj.id);
       if (obj.isHidden && (!isDraftView || !onionSkinEnabled360)) return;
       
       const layer = (layers || []).find(l => l.id === obj.layerId);
@@ -4950,6 +4951,12 @@ export default function CanvasArea({
       }
 
       ctx.restore();
+      } catch (err) {
+        console.error("Safely caught canvas drawing exception for object:", obj.id, err);
+        try {
+          ctx.restore();
+        } catch (_) {}
+      }
     });
 
     // Draw select overlay bounding boxes & 10+ handles

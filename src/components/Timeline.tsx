@@ -79,17 +79,22 @@ export default function Timeline({
     if (isPlaying) {
       const intervalMs = 1000 / fps;
       playbackTimerRef.current = setInterval(() => {
-        setCurrentFrameIndex((prevIndex) => {
-          if (prevIndex >= frames.length - 1) {
-            if (loopEnabled) {
-              return 0; // Loop back
-            } else {
-              setIsPlaying(false);
-              return prevIndex;
+        try {
+          setCurrentFrameIndex((prevIndex) => {
+            if (prevIndex >= frames.length - 1) {
+              if (loopEnabled) {
+                return 0; // Loop back
+              } else {
+                setIsPlaying(false);
+                return prevIndex;
+              }
             }
-          }
-          return prevIndex + 1;
-        });
+            return prevIndex + 1;
+          });
+        } catch (err) {
+          console.error("Playback loop error caught safely:", err);
+          setIsPlaying(false);
+        }
       }, intervalMs);
     } else {
       if (playbackTimerRef.current) {
