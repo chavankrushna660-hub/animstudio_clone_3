@@ -183,6 +183,7 @@ export interface VectorObject {
   fontFamily?: string;
   isLocked: boolean;
   isHidden: boolean;
+  isContinuousDrawing?: boolean;
   hiddenPoints?: number[];
   hiddenSubPaths?: { [subPathIdx: number]: number[] };
   hiddenLassoRegions?: { localLassoPoints: Point[] }[];

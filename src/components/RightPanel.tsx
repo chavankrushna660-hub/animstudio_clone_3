@@ -2235,16 +2235,30 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => {
+                        if (!selectedObject.isContinuousDrawing) {
+                          alert("Error: 'Edit / Resume Drawing' is only available for drawings originally made using the Continuous Drawing tool.");
+                          return;
+                        }
                         if (setContinuousDrawActive && setActiveContinuousDrawingId) {
                           setContinuousDrawActive(true);
                           setActiveContinuousDrawingId(selectedObject.id);
                         }
                       }}
-                      className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-black uppercase text-xs rounded-xl tracking-wider shadow-lg shadow-emerald-500/10 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                      className={`w-full py-2 font-black uppercase text-xs rounded-xl tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                        selectedObject.isContinuousDrawing 
+                          ? 'bg-emerald-700 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/10'
+                          : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-700/50'
+                      }`}
+                      title={!selectedObject.isContinuousDrawing ? "Only available for drawings made with Continuous Drawing tool" : "Edit or resume drawing"}
                     >
                       <Feather className="w-3.5 h-3.5" />
                       Edit / Resume Drawing
                     </button>
+                    {!selectedObject.isContinuousDrawing && (
+                      <p className="text-[9px] text-rose-400 font-sans leading-normal font-semibold text-center mt-1">
+                        ⚠️ Only active for drawings made with Continuous Drawing
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

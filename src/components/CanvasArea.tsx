@@ -16,6 +16,35 @@ import {
 } from '../utils/math';
 import { getInterpolatedObjects } from '../utils/interpolation';
 
+function getTransparentColor(colorStr: string): string {
+  if (!colorStr) return 'rgba(255, 255, 255, 0)';
+  const trimmed = colorStr.trim().toLowerCase();
+  
+  if (trimmed.startsWith('#')) {
+    const hex = trimmed.slice(1);
+    let r = 255, g = 255, b = 255;
+    if (hex.length === 3) {
+      r = parseInt(hex[0] + hex[0], 16);
+      g = parseInt(hex[1] + hex[1], 16);
+      b = parseInt(hex[2] + hex[2], 16);
+    } else if (hex.length === 6 || hex.length === 8) {
+      r = parseInt(hex.slice(0, 2), 16);
+      g = parseInt(hex.slice(2, 4), 16);
+      b = parseInt(hex.slice(4, 6), 16);
+    }
+    return `rgba(${r}, ${g}, ${b}, 0)`;
+  }
+  
+  if (trimmed.startsWith('rgb')) {
+    const match = trimmed.match(/\d+/g);
+    if (match && match.length >= 3) {
+      return `rgba(${match[0]}, ${match[1]}, ${match[2]}, 0)`;
+    }
+  }
+  
+  return 'rgba(255, 255, 255, 0)';
+}
+
 // Mesh Warp Bilinear Interpolation helper
 const getWarpedPoint = (p: Point, meshState: any, bounds: any) => {
   if (!meshState || !meshState.active) return p;
@@ -3640,6 +3669,7 @@ export default function CanvasArea({
           const updatedSubPaths = [...(existingObj.subPaths || []), pts];
           const updatedObj: VectorObject = {
             ...existingObj,
+            isContinuousDrawing: true,
             subPaths: updatedSubPaths,
           };
           setObjects(prev => ({ ...prev, [activeContinuousDrawingId]: updatedObj }));
@@ -3666,6 +3696,7 @@ export default function CanvasArea({
             layerId: activeLayerId,
             isLocked: false,
             isHidden: false,
+            isContinuousDrawing: true,
             brushType: brushSettings?.brushType ?? 'solid',
             strokeOpacity: brushSettings?.strokeOpacity ?? 1.0,
             hardness: brushSettings?.hardness ?? 0.8,
@@ -5013,7 +5044,7 @@ export default function CanvasArea({
           ctx.globalAlpha = pt.opacity !== undefined ? pt.opacity : 1.0;
           const grad = ctx.createRadialGradient(worldPt.x, worldPt.y, 0, worldPt.x, worldPt.y, brushSize);
           grad.addColorStop(0, pt.color);
-          grad.addColorStop(1, 'transparent');
+          grad.addColorStop(1, getTransparentColor(pt.color));
           
           ctx.fillStyle = grad;
           ctx.beginPath();
