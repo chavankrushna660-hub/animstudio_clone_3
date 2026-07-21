@@ -476,13 +476,27 @@ const initializeCurvePathState = (obj: VectorObject, hPointsCount = 10, vPointsC
   };
 };
 
-const curvePathCache = new WeakMap<any, { hTransforms: any[]; vTransforms: any[] }>();
+const getCurvePathHash = (cps: CurvePathState): number => {
+  const hCPs = cps.hControlPoints || [];
+  const vCPs = cps.vControlPoints || [];
+  let hash = hCPs.length + vCPs.length * 31;
+  for (let i = 0; i < hCPs.length; i++) {
+    hash += hCPs[i].x + hCPs[i].y * 17;
+  }
+  for (let i = 0; i < vCPs.length; i++) {
+    hash += vCPs[i].x + vCPs[i].y * 17;
+  }
+  return hash;
+};
+
+const curvePathCache = new WeakMap<any, { hash: number; hTransforms: any[]; vTransforms: any[] }>();
 
 const deformWithCurvePath = (p: Point, cps: CurvePathState): Point => {
   if (!cps || !cps.active) return p;
   
+  const currentHash = getCurvePathHash(cps);
   let cached = curvePathCache.get(cps);
-  if (!cached) {
+  if (!cached || cached.hash !== currentHash) {
     const hCPs = cps.hControlPoints || [];
     const hCPs0 = cps.hControlPoints0 || [];
     const vCPs = cps.vControlPoints || [];
@@ -541,7 +555,7 @@ const deformWithCurvePath = (p: Point, cps: CurvePathState): Point => {
       return { cp0, cp, cosT: Math.cos(theta), sinT: Math.sin(theta), scale };
     });
 
-    cached = { hTransforms, vTransforms };
+    cached = { hash: currentHash, hTransforms, vTransforms };
     curvePathCache.set(cps, cached);
   }
 

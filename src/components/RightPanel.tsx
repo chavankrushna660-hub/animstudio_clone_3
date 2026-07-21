@@ -245,7 +245,10 @@ export default function RightPanel({
     scaleX: 1,
     scaleY: 1,
     skewX: 0,
-    skewY: 0
+    skewY: 0,
+    rotateX: 0,
+    rotateY: 0,
+    perspective: 0
   });
 
   const objectsRef = React.useRef(objects);
@@ -265,7 +268,10 @@ export default function RightPanel({
           scaleX: 1,
           scaleY: 1,
           skewX: 0,
-          skewY: 0
+          skewY: 0,
+          rotateX: 0,
+          rotateY: 0,
+          perspective: 0
         });
 
         // Compute which points/subPaths of which active/unlocked/visible drawings are inside the lasso
@@ -342,32 +348,46 @@ export default function RightPanel({
       transformType: string,
       val: number
     ): Point => {
-      const localPivot = obj.pivots?.[0] || { localX: 0, localY: 0 };
-      const W = localToWorld(p, obj.transform, localPivot);
+      try {
+        const localPivot = obj.pivots?.[0] || { localX: 0, localY: 0 };
+        const W = localToWorld(p, obj.transform, localPivot);
 
-      let WPrime = { ...W };
-      if (transformType === 'translateX') {
-        WPrime.x += val;
-      } else if (transformType === 'translateY') {
-        WPrime.y += val;
-      } else if (transformType === 'rotate') {
-        WPrime = rotatePoint(W, val, center);
-      } else if (transformType === 'scaleX') {
-        WPrime.x = center.x + (W.x - center.x) * val;
-      } else if (transformType === 'scaleY') {
-        WPrime.y = center.y + (W.y - center.y) * val;
-      } else if (transformType === 'skewX') {
-        const rad = (val * Math.PI) / 180;
-        WPrime.x = W.x + (W.y - center.y) * Math.tan(rad);
-      } else if (transformType === 'skewY') {
-        const rad = (val * Math.PI) / 180;
-        WPrime.y = W.y + (W.x - center.x) * Math.tan(rad);
+        let WPrime = { ...W };
+        if (transformType === 'translateX') {
+          WPrime.x += val;
+        } else if (transformType === 'translateY') {
+          WPrime.y += val;
+        } else if (transformType === 'rotate') {
+          WPrime = rotatePoint(W, val, center);
+        } else if (transformType === 'scaleX') {
+          WPrime.x = center.x + (W.x - center.x) * val;
+        } else if (transformType === 'scaleY') {
+          WPrime.y = center.y + (W.y - center.y) * val;
+        } else if (transformType === 'skewX') {
+          const rad = (val * Math.PI) / 180;
+          WPrime.x = W.x + (W.y - center.y) * Math.tan(rad);
+        } else if (transformType === 'skewY') {
+          const rad = (val * Math.PI) / 180;
+          WPrime.y = W.y + (W.x - center.x) * Math.tan(rad);
+        } else if (transformType === 'rotateX') {
+          const tempT = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: val, rotateY: 0, perspective: 0 };
+          WPrime = localToWorld(W, tempT, { localX: center.x, localY: center.y });
+        } else if (transformType === 'rotateY') {
+          const tempT = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: val, perspective: 0 };
+          WPrime = localToWorld(W, tempT, { localX: center.x, localY: center.y });
+        } else if (transformType === 'perspective') {
+          const tempT = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: val };
+          WPrime = localToWorld(W, tempT, { localX: center.x, localY: center.y });
+        }
+
+        return {
+          ...p,
+          ...worldToLocal(WPrime, obj.transform, localPivot)
+        };
+      } catch (err) {
+        console.error("Error transforming point with lasso:", err);
+        return p;
       }
-
-      return {
-        ...p,
-        ...worldToLocal(WPrime, obj.transform, localPivot)
-      };
     };
 
     // Update current frame's objects state
@@ -465,7 +485,7 @@ export default function RightPanel({
     }
   };
 
-  const handleLassoSliderChange = (type: 'translateX' | 'translateY' | 'rotate' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY', value: number) => {
+  const handleLassoSliderChange = (type: 'translateX' | 'translateY' | 'rotate' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective', value: number) => {
     const prevVal = lassoSliders[type];
     let diff = 0;
     if (type === 'scaleX' || type === 'scaleY') {
@@ -482,7 +502,7 @@ export default function RightPanel({
     }));
   };
 
-  const handleLassoNudge = (type: 'translateX' | 'translateY' | 'rotate' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY', amount: number) => {
+  const handleLassoNudge = (type: 'translateX' | 'translateY' | 'rotate' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective', amount: number) => {
     let nextVal = lassoSliders[type] + amount;
     if (type === 'scaleX' || type === 'scaleY') {
       nextVal = Math.max(0.01, Number((lassoSliders[type] + amount).toFixed(2)));
@@ -2545,6 +2565,90 @@ export default function RightPanel({
                       <button onClick={() => handleLassoNudge('skewY', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
                       <button onClick={() => handleLassoNudge('skewY', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
                       <button onClick={() => handleLassoNudge('skewY', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
+                    </div>
+                  </div>
+
+                  {/* 3D Transformation Divider */}
+                  <div className="pt-2 border-t border-neutral-800/40">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-500/80 font-mono">3D Transform</span>
+                  </div>
+
+                  {/* Rotate X */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-neutral-400 font-mono">Rotate X (3D)</span>
+                      <span className="text-white font-bold font-mono">{lassoSliders.rotateX.toFixed(1)}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-90"
+                      max="90"
+                      step="1"
+                      value={lassoSliders.rotateX}
+                      onChange={(e) => handleLassoSliderChange('rotateX', Number(e.target.value))}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex items-center justify-between gap-1 pt-0.5">
+                      <button onClick={() => handleLassoNudge('rotateX', -5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-5°</button>
+                      <button onClick={() => handleLassoNudge('rotateX', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
+                      <button onClick={() => handleLassoNudge('rotateX', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
+                      <button onClick={() => handleLassoNudge('rotateX', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
+                    </div>
+                  </div>
+
+                  {/* Rotate Y */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-neutral-400 font-mono">Rotate Y (3D)</span>
+                      <span className="text-white font-bold font-mono">{lassoSliders.rotateY.toFixed(1)}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-90"
+                      max="90"
+                      step="1"
+                      value={lassoSliders.rotateY}
+                      onChange={(e) => handleLassoSliderChange('rotateY', Number(e.target.value))}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex items-center justify-between gap-1 pt-0.5">
+                      <button onClick={() => handleLassoNudge('rotateY', -5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-5°</button>
+                      <button onClick={() => handleLassoNudge('rotateY', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
+                      <button onClick={() => handleLassoNudge('rotateY', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
+                      <button onClick={() => handleLassoNudge('rotateY', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
+                    </div>
+                  </div>
+
+                  {/* Perspective */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-neutral-400 font-mono">Perspective</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-white font-bold font-mono">{lassoSliders.perspective}</span>
+                        {lassoSliders.perspective !== 0 && (
+                          <button
+                            onClick={() => handleLassoSliderChange('perspective', 0)}
+                            className="text-[9px] font-black text-amber-400/80 hover:text-amber-300 cursor-pointer underline decoration-dotted"
+                          >
+                            RESET
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1000"
+                      step="10"
+                      value={lassoSliders.perspective}
+                      onChange={(e) => handleLassoSliderChange('perspective', Number(e.target.value))}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex items-center justify-between gap-1 pt-0.5">
+                      <button onClick={() => handleLassoNudge('perspective', -50)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-50</button>
+                      <button onClick={() => handleLassoNudge('perspective', -10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-10</button>
+                      <button onClick={() => handleLassoNudge('perspective', 10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+10</button>
+                      <button onClick={() => handleLassoNudge('perspective', 50)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+50</button>
                     </div>
                   </div>
                 </div>
@@ -4817,8 +4921,8 @@ export default function RightPanel({
                           onClick={() => {
                             const isCurrentlyEnabled = !!selectedObject.transform3D?.enabled;
                             const defaultFaces = {
-                              front: { color: (selectedObject.fillColor && selectedObject.fillColor !== 'transparent') ? selectedObject.fillColor : '#6366F1', opacity: 1.0, visible: true },
-                              back: { color: (selectedObject.fillColor && selectedObject.fillColor !== 'transparent') ? selectedObject.fillColor : '#4F46E5', opacity: 1.0, visible: true },
+                              front: { color: (selectedObject.fillColor && selectedObject.fillColor !== 'transparent') ? selectedObject.fillColor : (selectedObject.strokeColor || '#6366F1'), opacity: 1.0, visible: true },
+                              back: { color: (selectedObject.fillColor && selectedObject.fillColor !== 'transparent') ? selectedObject.fillColor : (selectedObject.strokeColor || '#4F46E5'), opacity: 1.0, visible: true },
                               sides: { color: selectedObject.strokeColor || '#4338CA', opacity: 1.0, visible: true }
                             };
                             
@@ -4922,6 +5026,32 @@ export default function RightPanel({
                                 }}
                                 className="w-full accent-indigo-500 h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                               />
+                            </div>
+
+                            {/* Fill Gaps & Inner Area Toggle */}
+                            <div className="flex items-center justify-between pt-1.5 border-t border-neutral-800/40">
+                              <span className="text-[10px] text-neutral-400 font-bold uppercase flex flex-col">
+                                <span>Fill Gaps & Inner Area</span>
+                                <span className="text-[8px] text-neutral-500 font-normal normal-case leading-tight">Closes and fills disjoint 3D regions</span>
+                              </span>
+                              <button
+                                id="toggle-extrusion-fillgaps"
+                                onClick={() => {
+                                  const newFillGaps = !selectedObject.fillGaps3D;
+                                  updateObject(selectedObject.id, {
+                                    fillGaps3D: newFillGaps
+                                  });
+                                }}
+                                className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-200 focus:outline-none ${
+                                  selectedObject.fillGaps3D ? 'bg-indigo-500' : 'bg-neutral-800'
+                                }`}
+                              >
+                                <div
+                                  className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
+                                    selectedObject.fillGaps3D ? 'translate-x-4' : 'translate-x-0'
+                                  }`}
+                                />
+                              </button>
                             </div>
                           </div>
 
@@ -5371,7 +5501,7 @@ export default function RightPanel({
                                 const currentInner = selectedObject.innerSpace3D !== undefined ? selectedObject.innerSpace3D : 10;
                                 const pts = selectedObject.originalPointsBackup || selectedObject.points;
                                 if (pts) {
-                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, currentDepth, newHollow, currentInner);
+                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, currentDepth, newHollow, currentInner, !!selectedObject.fillGaps3D, selectedObject.strokeWidth || 5);
                                   updateObject(selectedObject.id, {
                                     vertices3D: res.vertices,
                                     faces3D: res.faces,
@@ -5387,6 +5517,40 @@ export default function RightPanel({
                               <div
                                 className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
                                   selectedObject.hollowEnabled ? 'translate-x-4' : 'translate-x-0'
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {/* FILL GAPS & INNER AREA */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-neutral-300 font-bold uppercase flex flex-col">
+                              <span>Fill Gaps & Inner Area</span>
+                              <span className="text-[8px] text-neutral-500 font-normal normal-case leading-tight">Closes and fills disjoint 3D regions</span>
+                            </span>
+                            <button
+                              id="toggle-3d-fillgaps"
+                              onClick={() => {
+                                const newFillGaps = !selectedObject.fillGaps3D;
+                                const currentDepth = selectedObject.depth3D || 40;
+                                const currentInner = selectedObject.innerSpace3D !== undefined ? selectedObject.innerSpace3D : 10;
+                                const pts = selectedObject.originalPointsBackup || selectedObject.points;
+                                if (pts) {
+                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, currentDepth, !!selectedObject.hollowEnabled, currentInner, newFillGaps, selectedObject.strokeWidth || 5);
+                                  updateObject(selectedObject.id, {
+                                    vertices3D: res.vertices,
+                                    faces3D: res.faces,
+                                    fillGaps3D: newFillGaps
+                                  });
+                                }
+                              }}
+                              className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-200 focus:outline-none ${
+                                selectedObject.fillGaps3D ? 'bg-amber-500' : 'bg-neutral-800'
+                              }`}
+                            >
+                              <div
+                                className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
+                                  selectedObject.fillGaps3D ? 'translate-x-4' : 'translate-x-0'
                                 }`}
                               />
                             </button>
@@ -5412,7 +5576,7 @@ export default function RightPanel({
                                 const currentDepth = selectedObject.depth3D || 40;
                                 const pts = selectedObject.originalPointsBackup || selectedObject.points;
                                 if (pts) {
-                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, currentDepth, !!selectedObject.hollowEnabled, val);
+                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, currentDepth, !!selectedObject.hollowEnabled, val, !!selectedObject.fillGaps3D, selectedObject.strokeWidth || 5);
                                   updateObject(selectedObject.id, {
                                     vertices3D: res.vertices,
                                     faces3D: res.faces,
@@ -5443,7 +5607,7 @@ export default function RightPanel({
                                 const pts = selectedObject.originalPointsBackup || selectedObject.points;
                                 const currentInner = selectedObject.innerSpace3D !== undefined ? selectedObject.innerSpace3D : 10;
                                 if (pts) {
-                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, val, !!selectedObject.hollowEnabled, currentInner);
+                                  const res = extrude2DTo3D(pts, selectedObject.fillColor, selectedObject.strokeColor, val, !!selectedObject.hollowEnabled, currentInner, !!selectedObject.fillGaps3D, selectedObject.strokeWidth || 5);
                                   updateObject(selectedObject.id, {
                                     vertices3D: res.vertices,
                                     faces3D: res.faces,

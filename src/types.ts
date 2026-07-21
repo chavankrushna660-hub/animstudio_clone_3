@@ -220,6 +220,7 @@ export interface VectorObject {
   hollowEnabled?: boolean;
   innerSpace3D?: number;
   depth3D?: number;
+  fillGaps3D?: boolean;
   selectedFaceIndex?: number;
   selectedEdgeIndex?: number;
   shape3DType?: 'car' | 'character' | 'chair' | 'sphere' | 'box' | 'sword';

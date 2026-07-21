@@ -275,8 +275,8 @@ export class Renderer3D {
         const steps = Math.max(1, Math.ceil(totalDepth / 1.5));
         const stepDelta = (endZ - startZ) / steps;
         
-        // Colors from workbench
-        const defaultFrontColor = drawing.fillColor && drawing.fillColor !== 'transparent' ? drawing.fillColor : '#6366F1';
+        // Colors from workbench - preserve exact colors
+        const defaultFrontColor = drawing.fillColor && drawing.fillColor !== 'transparent' ? drawing.fillColor : (drawing.strokeColor || '#6366F1');
         const defaultSidesColor = drawing.strokeColor || '#4338CA';
         
         const frontColorObj = t3d.faces?.front ?? { color: defaultFrontColor, opacity: 1.0, visible: true };
@@ -286,23 +286,48 @@ export class Renderer3D {
         ctx.save();
         ctx.lineCap = drawing.strokeWidth > 3 ? 'round' : 'butt';
         ctx.lineJoin = 'round';
+
+        // Extract disjoint segments if fillGaps3D is false (or undefined)
+        const segments: Point[][] = [];
+        if (!drawing.fillGaps3D && drawing.points.some(p => p.gap)) {
+            let currentSegment: Point[] = [];
+            for (let i = 0; i < drawing.points.length; i++) {
+                const pt = drawing.points[i];
+                if (pt.gap && currentSegment.length > 0) {
+                    segments.push(currentSegment);
+                    currentSegment = [];
+                }
+                currentSegment.push(pt);
+            }
+            if (currentSegment.length > 0) {
+                segments.push(currentSegment);
+            }
+        } else {
+            segments.push(drawing.points);
+        }
         
         // Draw the back face / back layer first if visible and not the same as sides
         if (backColorObj.visible && totalDepth > 2) {
-            const backPoints = drawing.points.map(p => projectPointAtZ(p, startZ));
             ctx.beginPath();
-            backPoints.forEach((pt, idx) => {
-                if (idx === 0) ctx.moveTo(pt.x, pt.y);
-                else ctx.lineTo(pt.x, pt.y);
+            segments.forEach(seg => {
+                const backPoints = seg.map(p => projectPointAtZ(p, startZ));
+                backPoints.forEach((pt, idx) => {
+                    if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                    else ctx.lineTo(pt.x, pt.y);
+                });
+                if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
+                    ctx.closePath();
+                }
             });
-            if (drawing.type === 'shape') {
-                ctx.closePath();
+            
+            if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
                 ctx.fillStyle = backColorObj.color;
                 ctx.globalAlpha = backColorObj.opacity * (drawing.opacity ?? 1.0);
                 ctx.fill();
             }
             
-            const avgScale = backPoints.reduce((sum, pt) => sum + pt.scale, 0) / backPoints.length;
+            const allBackPoints = drawing.points.map(p => projectPointAtZ(p, startZ));
+            const avgScale = allBackPoints.reduce((sum, pt) => sum + pt.scale, 0) / allBackPoints.length;
             ctx.strokeStyle = backColorObj.color;
             ctx.lineWidth = (drawing.strokeWidth ?? 2) * avgScale;
             ctx.globalAlpha = backColorObj.opacity * (drawing.opacity ?? 1.0);
@@ -313,12 +338,17 @@ export class Renderer3D {
         if (sidesColorObj.visible && totalDepth > 1) {
             for (let i = 0; i < steps; i++) {
                 const currentZ = startZ + i * stepDelta;
-                const projectedPoints = drawing.points.map(p => projectPointAtZ(p, currentZ));
                 
                 ctx.beginPath();
-                projectedPoints.forEach((pt, idx) => {
-                    if (idx === 0) ctx.moveTo(pt.x, pt.y);
-                    else ctx.lineTo(pt.x, pt.y);
+                segments.forEach(seg => {
+                    const projectedPoints = seg.map(p => projectPointAtZ(p, currentZ));
+                    projectedPoints.forEach((pt, idx) => {
+                        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                        else ctx.lineTo(pt.x, pt.y);
+                    });
+                    if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
+                        ctx.closePath();
+                    }
                 });
                 
                 // For sides, calculate dynamic lighting brightness based on rotation to add realistic 3D depth
@@ -327,14 +357,14 @@ export class Renderer3D {
                 const brightness = 0.5 + 0.5 * depthPct;
                 const litColor = this.applyLighting(sidesColorObj.color, brightness);
                 
-                if (drawing.type === 'shape') {
-                    ctx.closePath();
+                if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
                     ctx.fillStyle = litColor;
                     ctx.globalAlpha = sidesColorObj.opacity * (drawing.opacity ?? 1.0);
                     ctx.fill();
                 }
                 
-                const avgScale = projectedPoints.reduce((sum, pt) => sum + pt.scale, 0) / projectedPoints.length;
+                const allProjectedPoints = drawing.points.map(p => projectPointAtZ(p, currentZ));
+                const avgScale = allProjectedPoints.reduce((sum, pt) => sum + pt.scale, 0) / allProjectedPoints.length;
                 ctx.strokeStyle = litColor;
                 ctx.lineWidth = (drawing.strokeWidth ?? 2) * avgScale;
                 ctx.globalAlpha = sidesColorObj.opacity * (drawing.opacity ?? 1.0);
@@ -344,21 +374,26 @@ export class Renderer3D {
         
         // Draw the main front face on top
         if (frontColorObj.visible) {
-            const frontPoints = drawing.points.map(p => projectPointAtZ(p, endZ));
             ctx.beginPath();
-            frontPoints.forEach((pt, idx) => {
-                if (idx === 0) ctx.moveTo(pt.x, pt.y);
-                else ctx.lineTo(pt.x, pt.y);
+            segments.forEach(seg => {
+                const frontPoints = seg.map(p => projectPointAtZ(p, endZ));
+                frontPoints.forEach((pt, idx) => {
+                    if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                    else ctx.lineTo(pt.x, pt.y);
+                });
+                if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
+                    ctx.closePath();
+                }
             });
             
-            if (drawing.type === 'shape') {
-                ctx.closePath();
+            if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
                 ctx.fillStyle = frontColorObj.color;
                 ctx.globalAlpha = frontColorObj.opacity * (drawing.opacity ?? 1.0);
                 ctx.fill();
             }
             
-            const avgScale = frontPoints.reduce((sum, pt) => sum + pt.scale, 0) / frontPoints.length;
+            const allFrontPoints = drawing.points.map(p => projectPointAtZ(p, endZ));
+            const avgScale = allFrontPoints.reduce((sum, pt) => sum + pt.scale, 0) / allFrontPoints.length;
             ctx.strokeStyle = drawing.strokeColor || '#ffffff';
             ctx.lineWidth = (drawing.strokeWidth ?? 2) * avgScale;
             ctx.globalAlpha = (drawing.opacity ?? 1.0);

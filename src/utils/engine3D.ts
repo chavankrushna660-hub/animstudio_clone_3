@@ -752,50 +752,78 @@ function delaunayTriangulate(points: { x: number; y: number }[]): Triangle[] {
   return triangles;
 }
 
-/**
- * Extrudes 2D vector drawing points to generate a real 3D solid wireframe geometry prism
- */
-export function extrude2DTo3D(
+function expandStrokeToPolygon(pts: Point[], thickness: number): Point[] {
+  if (pts.length < 2) return pts;
+  const N = pts.length;
+  const leftSide: Point[] = [];
+  const rightSide: Point[] = [];
+  
+  const T = Math.max(4, thickness || 8); // Ensure a reasonable minimum thickness
+  
+  for (let i = 0; i < N; i++) {
+    const p = pts[i];
+    let dx = 0;
+    let dy = 0;
+    
+    if (i === 0) {
+      dx = pts[1].x - p.x;
+      dy = pts[1].y - p.y;
+    } else if (i === N - 1) {
+      dx = p.x - pts[N - 2].x;
+      dy = p.y - pts[N - 2].y;
+    } else {
+      const dx1 = p.x - pts[i - 1].x;
+      const dy1 = p.y - pts[i - 1].y;
+      const dx2 = pts[i + 1].x - p.x;
+      const dy2 = pts[i + 1].y - p.y;
+      const len1 = Math.hypot(dx1, dy1) || 1;
+      const len2 = Math.hypot(dx2, dy2) || 1;
+      dx = (dx1 / len1 + dx2 / len2) / 2;
+      dy = (dy1 / len1 + dy2 / len2) / 2;
+    }
+    
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    
+    leftSide.push({
+      x: p.x + nx * (T / 2),
+      y: p.y + ny * (T / 2)
+    });
+    rightSide.push({
+      x: p.x - nx * (T / 2),
+      y: p.y - ny * (T / 2)
+    });
+  }
+  
+  const polygon: Point[] = [...leftSide];
+  for (let i = N - 1; i >= 0; i--) {
+    polygon.push(rightSide[i]);
+  }
+  if (leftSide.length > 0) {
+    polygon.push({ ...leftSide[0] });
+  }
+  
+  return polygon;
+}
+
+function extrudeSingleCleanSegmentTo3D(
   points: Point[],
+  cx: number,
+  cy: number,
   fillColor: string,
   strokeColor: string,
   depth: number = 40,
   hollowEnabled: boolean = false,
-  innerSpace: number = 10
-): { vertices: Vertex3D[]; faces: Face3D[]; center: { x: number; y: number } } {
+  innerSpace: number = 10,
+  strokeWidth: number = 5
+): { vertices: Vertex3D[]; faces: Face3D[] } {
   const vertices: Vertex3D[] = [];
   const faces: Face3D[] = [];
 
-  // Limit input points to 120 points maximum using robust downsampling to prevent CPU hangs or crashes
-  let safePoints = points || [];
-  if (safePoints.length > 120) {
-    const step = Math.ceil(safePoints.length / 120);
-    safePoints = safePoints.filter((_, idx) => idx % step === 0);
-  }
-
-  if (safePoints.length < 2) {
-    // Fallback cube if no valid points
-    return {
-      vertices: [
-        { x: -20, y: -20, z: -20 }, { x: 20, y: -20, z: -20 }, { x: 20, y: 20, z: -20 }, { x: -20, y: 20, z: -20 },
-        { x: -20, y: -20, z: 20 }, { x: 20, y: -20, z: 20 }, { x: 20, y: 20, z: 20 }, { x: -20, y: 20, z: 20 }
-      ],
-      faces: [
-        { indices: [0, 1, 2, 3], fillColor: '#F59E0B', baseColor: '#F59E0B' },
-        { indices: [5, 4, 7, 6], fillColor: '#F59E0B', baseColor: '#F59E0B' },
-        { indices: [0, 3, 7, 4], fillColor: '#D97706', baseColor: '#D97706' },
-        { indices: [1, 5, 6, 2], fillColor: '#D97706', baseColor: '#D97706' },
-        { indices: [3, 2, 6, 7], fillColor: '#B45309', baseColor: '#B45309' },
-        { indices: [4, 5, 1, 0], fillColor: '#B45309', baseColor: '#B45309' }
-      ],
-      center: { x: 0, y: 0 }
-    };
-  }
-
-  // Filter duplicate consecutive points to prevent degenerate geometry
-  let cleanPts = safePoints.filter((p, i) => {
+  let cleanPts = points.filter((p, i) => {
     if (i === 0) return true;
-    const prev = safePoints[i - 1];
+    const prev = points[i - 1];
     return Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5;
   });
 
@@ -803,46 +831,28 @@ export function extrude2DTo3D(
     cleanPts = [{ x: -20, y: 0 }, { x: 20, y: 0 }];
   }
 
-  // For 2 points, expand to a thin 2D rectangle to extrude as a solid slab
-  if (cleanPts.length === 2) {
-    const p1 = cleanPts[0];
-    const p2 = cleanPts[1];
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len * 10; // normal offset of 10px
-    const ny = dx / len * 10;
-    cleanPts = [
-      { x: p1.x - nx, y: p1.y - ny },
-      { x: p2.x - nx, y: p2.y - ny },
-      { x: p2.x + nx, y: p2.y + ny },
-      { x: p1.x + nx, y: p1.y + ny }
-    ];
-  }
-
-  // Compute Centroid
-  let sumX = 0;
-  let sumY = 0;
-  cleanPts.forEach(p => {
-    sumX += p.x;
-    sumY += p.y;
-  });
-  const cx = sumX / cleanPts.length;
-  const cy = sumY / cleanPts.length;
-
-  // Check if path is closed, if not close it
+  // Check if path is closed
   const first = cleanPts[0];
   const last = cleanPts[cleanPts.length - 1];
   const isClosed = Math.hypot(last.x - first.x, last.y - first.y) < 5;
-  if (!isClosed && cleanPts.length > 2) {
-    cleanPts.push({ ...first });
+
+  // If stroke is open, expand it into a solid closed ribbon outline
+  if (!isClosed) {
+    cleanPts = expandStrokeToPolygon(cleanPts, strokeWidth);
+  }
+
+  // Check if path is closed, if not close it
+  const first2 = cleanPts[0];
+  const last2 = cleanPts[cleanPts.length - 1];
+  const isClosed2 = Math.hypot(last2.x - first2.x, last2.y - first2.y) < 5;
+  if (!isClosed2 && cleanPts.length > 2) {
+    cleanPts.push({ ...first2 });
   }
 
   const N = cleanPts.length;
   const baseCol = fillColor && fillColor !== 'transparent' ? fillColor : (strokeColor && strokeColor !== 'transparent' ? strokeColor : '#F59E0B');
   const sideCol = baseCol;
 
-  // Triangulation & inner points generation
   const uniquePts = cleanPts.slice(0, N - 1);
   const M_bound = uniquePts.length;
 
@@ -860,11 +870,9 @@ export function extrude2DTo3D(
   const height = maxY - minY;
   const maxDim = Math.max(width, height) || 100;
   
-  // Grid step size: dynamic based on size to keep vertex count sensible and high quality
   const step = Math.max(16, Math.min(32, maxDim / 10));
 
   const innerPts: Point[] = [];
-  // Generate internal points
   for (let gx = minX + step; gx < maxX; gx += step) {
     for (let gy = minY + step; gy < maxY; gy += step) {
       const pt = { x: gx, y: gy };
@@ -876,17 +884,14 @@ export function extrude2DTo3D(
     }
   }
 
-  // Sort candidate inner points so we keep the most central, high-quality ones
   innerPts.sort((a, b) => distanceToPolygon(b, uniquePts) - distanceToPolygon(a, uniquePts));
-  const limitedInnerPts = innerPts.slice(0, 3); // Strictly limit to a maximum of 3 internal points
+  const limitedInnerPts = innerPts.slice(0, 3);
 
   const v2D = [...uniquePts, ...limitedInnerPts];
   const M = v2D.length;
 
-  // Triangulate
   let triangles = delaunayTriangulate(v2D);
 
-  // Filter triangles whose centroid is inside the polygon
   triangles = triangles.filter(tri => {
     const pa = v2D[tri.a];
     const pb = v2D[tri.b];
@@ -898,10 +903,8 @@ export function extrude2DTo3D(
     return isPointInPolygon(centroid, cleanPts);
   });
 
-  // If triangulation failed or is too sparse, fall back to simple extrusion
   if (triangles.length === 0) {
     if (hollowEnabled) {
-      // Outer Front ring
       for (let i = 0; i < N; i++) {
         vertices.push({
           x: cleanPts[i].x - cx,
@@ -909,7 +912,6 @@ export function extrude2DTo3D(
           z: -depth / 2
         });
       }
-      // Outer Back ring
       for (let i = 0; i < N; i++) {
         vertices.push({
           x: cleanPts[i].x - cx,
@@ -921,7 +923,6 @@ export function extrude2DTo3D(
       const innerZ_front = -depth / 2 + Math.min(innerSpace, depth * 0.4);
       const innerZ_back = depth / 2 - Math.min(innerSpace, depth * 0.4);
 
-      // Inner Front ring (at index 2*N to 3*N - 1)
       for (let i = 0; i < N; i++) {
         const dx = cleanPts[i].x - cx;
         const dy = cleanPts[i].y - cy;
@@ -935,7 +936,6 @@ export function extrude2DTo3D(
         });
       }
 
-      // Inner Back ring (at index 3*N to 4*N - 1)
       for (let i = 0; i < N; i++) {
         const dx = cleanPts[i].x - cx;
         const dy = cleanPts[i].y - cy;
@@ -949,19 +949,16 @@ export function extrude2DTo3D(
         });
       }
 
-      // Outer Front face
       faces.push({
         indices: Array.from({ length: N }, (_, i) => i),
         fillColor: baseCol,
         baseColor: baseCol
       });
-      // Outer Back face
       faces.push({
         indices: Array.from({ length: N }, (_, i) => (N - 1 - i) + N),
         fillColor: baseCol,
         baseColor: baseCol
       });
-      // Outer Side faces
       for (let i = 0; i < N; i++) {
         const next = (i + 1) % N;
         faces.push({
@@ -971,19 +968,16 @@ export function extrude2DTo3D(
         });
       }
 
-      // Inner Front face (flipped)
       faces.push({
         indices: Array.from({ length: N }, (_, i) => (N - 1 - i) + 2 * N),
         fillColor: baseCol,
         baseColor: baseCol
       });
-      // Inner Back face (flipped)
       faces.push({
         indices: Array.from({ length: N }, (_, i) => i + 3 * N),
         fillColor: baseCol,
         baseColor: baseCol
       });
-      // Inner Side faces
       for (let i = 0; i < N; i++) {
         const next = (i + 1) % N;
         faces.push({
@@ -993,10 +987,9 @@ export function extrude2DTo3D(
         });
       }
 
-      return { vertices, faces, center: { x: cx, y: cy } };
+      return { vertices, faces };
     }
 
-    // Front ring
     for (let i = 0; i < N; i++) {
       vertices.push({
         x: cleanPts[i].x - cx,
@@ -1004,7 +997,6 @@ export function extrude2DTo3D(
         z: -depth / 2
       });
     }
-    // Back ring
     for (let i = 0; i < N; i++) {
       vertices.push({
         x: cleanPts[i].x - cx,
@@ -1013,19 +1005,16 @@ export function extrude2DTo3D(
       });
     }
 
-    // Front face
     faces.push({
       indices: Array.from({ length: N }, (_, i) => i),
       fillColor: baseCol,
       baseColor: baseCol
     });
-    // Back face
     faces.push({
       indices: Array.from({ length: N }, (_, i) => (N - 1 - i) + N),
       fillColor: baseCol,
       baseColor: baseCol
     });
-    // Side faces
     for (let i = 0; i < N; i++) {
       const next = (i + 1) % N;
       faces.push({
@@ -1034,12 +1023,10 @@ export function extrude2DTo3D(
         baseColor: sideCol
       });
     }
-    return { vertices, faces, center: { x: cx, y: cy } };
+    return { vertices, faces };
   }
 
-  // Triangulation Hollow Path
   if (hollowEnabled) {
-    // Front outer vertices
     for (let i = 0; i < M; i++) {
       vertices.push({
         x: v2D[i].x - cx,
@@ -1047,7 +1034,6 @@ export function extrude2DTo3D(
         z: -depth / 2
       });
     }
-    // Back outer vertices
     for (let i = 0; i < M; i++) {
       vertices.push({
         x: v2D[i].x - cx,
@@ -1056,11 +1042,9 @@ export function extrude2DTo3D(
       });
     }
 
-    // Shrink vertices towards centroid for the inner shell
     const innerZ_front = -depth / 2 + Math.min(innerSpace, depth * 0.4);
     const innerZ_back = depth / 2 - Math.min(innerSpace, depth * 0.4);
 
-    // Front inner vertices (at index 2*M to 3*M - 1)
     for (let i = 0; i < M; i++) {
       const dx = v2D[i].x - cx;
       const dy = v2D[i].y - cy;
@@ -1074,7 +1058,6 @@ export function extrude2DTo3D(
       });
     }
 
-    // Back inner vertices (at index 3*M to 4*M - 1)
     for (let i = 0; i < M; i++) {
       const dx = v2D[i].x - cx;
       const dy = v2D[i].y - cy;
@@ -1088,7 +1071,6 @@ export function extrude2DTo3D(
       });
     }
 
-    // Front OUTER faces
     triangles.forEach(tri => {
       const { a, b, c } = tri;
       const pa = v2D[a];
@@ -1102,7 +1084,6 @@ export function extrude2DTo3D(
       }
     });
 
-    // Back OUTER faces
     triangles.forEach(tri => {
       const { a, b, c } = tri;
       const pa = v2D[a];
@@ -1116,7 +1097,6 @@ export function extrude2DTo3D(
       }
     });
 
-    // Side OUTER faces
     for (let i = 0; i < M_bound; i++) {
       const next = (i + 1) % M_bound;
       faces.push({
@@ -1126,7 +1106,6 @@ export function extrude2DTo3D(
       });
     }
 
-    // Front INNER faces (winding order reversed)
     triangles.forEach(tri => {
       const { a, b, c } = tri;
       const pa = v2D[a];
@@ -1140,7 +1119,6 @@ export function extrude2DTo3D(
       }
     });
 
-    // Back INNER faces (winding order reversed)
     triangles.forEach(tri => {
       const { a, b, c } = tri;
       const pa = v2D[a];
@@ -1154,7 +1132,6 @@ export function extrude2DTo3D(
       }
     });
 
-    // Side INNER faces (winding order reversed)
     for (let i = 0; i < M_bound; i++) {
       const next = (i + 1) % M_bound;
       faces.push({
@@ -1164,11 +1141,9 @@ export function extrude2DTo3D(
       });
     }
 
-    return { vertices, faces, center: { x: cx, y: cy } };
+    return { vertices, faces };
   }
 
-  // Create 3D vertices based on robust triangulation
-  // Front vertices
   for (let i = 0; i < M; i++) {
     vertices.push({
       x: v2D[i].x - cx,
@@ -1176,7 +1151,6 @@ export function extrude2DTo3D(
       z: -depth / 2
     });
   }
-  // Back vertices
   for (let i = 0; i < M; i++) {
     vertices.push({
       x: v2D[i].x - cx,
@@ -1185,7 +1159,6 @@ export function extrude2DTo3D(
     });
   }
 
-  // Front face triangles
   triangles.forEach(tri => {
     const { a, b, c } = tri;
     const pa = v2D[a];
@@ -1207,7 +1180,6 @@ export function extrude2DTo3D(
     }
   });
 
-  // Back face triangles
   triangles.forEach(tri => {
     const { a, b, c } = tri;
     const pa = v2D[a];
@@ -1229,7 +1201,6 @@ export function extrude2DTo3D(
     }
   });
 
-  // Side quad faces connecting boundary vertices of front and back loops
   for (let i = 0; i < M_bound; i++) {
     const next = (i + 1) % M_bound;
     faces.push({
@@ -1239,7 +1210,118 @@ export function extrude2DTo3D(
     });
   }
 
-  return { vertices, faces, center: { x: cx, y: cy } };
+  return { vertices, faces };
+}
+
+/**
+ * Extrudes 2D vector drawing points to generate a real 3D solid wireframe geometry prism
+ */
+export function extrude2DTo3D(
+  points: Point[],
+  fillColor: string,
+  strokeColor: string,
+  depth: number = 40,
+  hollowEnabled: boolean = false,
+  innerSpace: number = 10,
+  fillGaps3D: boolean = false,
+  strokeWidth: number = 5
+): { vertices: Vertex3D[]; faces: Face3D[]; center: { x: number; y: number } } {
+  let safePoints = points || [];
+  if (safePoints.length > 120) {
+    const step = Math.ceil(safePoints.length / 120);
+    safePoints = safePoints.filter((_, idx) => idx % step === 0);
+  }
+
+  if (safePoints.length < 2) {
+    return {
+      vertices: [
+        { x: -20, y: -20, z: -20 }, { x: 20, y: -20, z: -20 }, { x: 20, y: 20, z: -20 }, { x: -20, y: 20, z: -20 },
+        { x: -20, y: -20, z: 20 }, { x: 20, y: -20, z: 20 }, { x: 20, y: 20, z: 20 }, { x: -20, y: 20, z: 20 }
+      ],
+      faces: [
+        { indices: [0, 1, 2, 3], fillColor: '#F59E0B', baseColor: '#F59E0B' },
+        { indices: [5, 4, 7, 6], fillColor: '#F59E0B', baseColor: '#F59E0B' },
+        { indices: [0, 3, 7, 4], fillColor: '#D97706', baseColor: '#D97706' },
+        { indices: [1, 5, 6, 2], fillColor: '#D97706', baseColor: '#D97706' },
+        { indices: [3, 2, 6, 7], fillColor: '#B45309', baseColor: '#B45309' },
+        { indices: [4, 5, 1, 0], fillColor: '#B45309', baseColor: '#B45309' }
+      ],
+      center: { x: 0, y: 0 }
+    };
+  }
+
+  // Compute overall centroid
+  let sumX = 0;
+  let sumY = 0;
+  safePoints.forEach(p => {
+    sumX += p.x;
+    sumY += p.y;
+  });
+  const cx = sumX / safePoints.length;
+  const cy = sumY / safePoints.length;
+
+  // Split points by gap if fillGaps3D is false
+  const segments: Point[][] = [];
+  if (!fillGaps3D && safePoints.some(p => p.gap)) {
+    let currentSegment: Point[] = [];
+    for (let i = 0; i < safePoints.length; i++) {
+      const pt = safePoints[i];
+      if (pt.gap && currentSegment.length > 0) {
+        segments.push(currentSegment);
+        currentSegment = [];
+      }
+      currentSegment.push(pt);
+    }
+    if (currentSegment.length > 0) {
+      segments.push(currentSegment);
+    }
+  } else {
+    segments.push(safePoints);
+  }
+
+  const allVertices: Vertex3D[] = [];
+  const allFaces: Face3D[] = [];
+
+  segments.forEach(seg => {
+    if (seg.length < 2) return;
+    const vertexOffset = allVertices.length;
+    const res = extrudeSingleCleanSegmentTo3D(
+      seg,
+      cx,
+      cy,
+      fillColor,
+      strokeColor,
+      depth,
+      hollowEnabled,
+      innerSpace,
+      strokeWidth
+    );
+
+    allVertices.push(...res.vertices);
+    res.faces.forEach(face => {
+      allFaces.push({
+        indices: face.indices.map(idx => idx + vertexOffset),
+        fillColor: face.fillColor,
+        baseColor: face.baseColor
+      });
+    });
+  });
+
+  return {
+    vertices: allVertices.length > 0 ? allVertices : [
+      { x: -20, y: -20, z: -20 }, { x: 20, y: -20, z: -20 }, { x: 20, y: 20, z: -20 }, { x: -20, y: 20, z: -20 },
+      { x: -20, y: -20, z: 20 }, { x: 20, y: -20, z: 20 }, { x: 20, y: 20, z: 20 }, { x: -20, y: 20, z: 20 }
+    ],
+    faces: allFaces.length > 0 ? allFaces : [
+      { indices: [0, 1, 2, 3], fillColor: '#F59E0B', baseColor: '#F59E0B' },
+      { indices: [5, 4, 7, 6], fillColor: '#F59E0B', baseColor: '#F59E0B' },
+      { indices: [0, 3, 7, 4], fillColor: '#D97706', baseColor: '#D97706' },
+      { indices: [1, 5, 6, 2], fillColor: '#D97706', baseColor: '#D97706' },
+      { indices: [3, 2, 6, 7], fillColor: '#B45309', baseColor: '#B45309' },
+      { indices: [4, 5, 1, 0], fillColor: '#B45309', baseColor: '#B45309' }
+    ],
+    center: { x: cx, y: cy }
+  };
 }
 
 export function deleteFace3D(faces: Face3D[], index: number): Face3D[] {

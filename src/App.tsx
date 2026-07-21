@@ -2660,7 +2660,16 @@ export default function App() {
     incrementDailyLimit(email);
 
     // Run extrusion algorithm
-    const result = extrude2DTo3D(obj.points, obj.fillColor, obj.strokeColor);
+    const result = extrude2DTo3D(
+      obj.points,
+      obj.fillColor,
+      obj.strokeColor,
+      40,
+      false,
+      10,
+      !!obj.fillGaps3D,
+      obj.strokeWidth || 5
+    );
 
     const subPaths3D: { x: number; y: number; z: number }[][] = [];
     const depthVal = 40;
@@ -2689,8 +2698,9 @@ export default function App() {
         { x: -50, y: -50 }
       ], // 2D projection footprint box
       strokeColor: obj.strokeColor !== 'transparent' ? obj.strokeColor : '#F59E0B',
-      strokeWidth: 2.0,
-      fillColor: obj.fillColor !== 'transparent' ? obj.fillColor : '#F59E0B',
+      strokeWidth: obj.strokeWidth || 5.0,
+      fillColor: obj.fillColor,
+      fillGaps3D: !!obj.fillGaps3D,
       transform: {
         ...obj.transform,
         x: obj.transform.x + result.center.x,
