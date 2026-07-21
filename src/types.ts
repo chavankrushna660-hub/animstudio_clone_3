@@ -9,6 +9,14 @@ export interface Point {
   grainOpacity?: number;
 }
 
+declare global {
+  interface Window {
+    customAlert: (message: string, title?: string) => Promise<void>;
+    customConfirm: (message: string, title?: string) => Promise<boolean>;
+    customPrompt: (message: string, defaultValue?: string, title?: string) => Promise<string | null>;
+  }
+}
+
 export interface RealismSettings {
   autoTaperEnabled: boolean;
   minThickness: number;

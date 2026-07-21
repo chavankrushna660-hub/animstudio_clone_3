@@ -37,6 +37,7 @@ import LeftPanel from './components/LeftPanel';
 import RightPanel from './components/RightPanel';
 import CanvasArea from './components/CanvasArea';
 import Timeline from './components/Timeline';
+import CustomDialog, { CustomDialogConfig } from './components/CustomDialog';
 import { VectorObject, Bone, Layer, Frame, Point, RealismSettings, View360, BrushSettings, Transform, LiquifyBrushSettings } from './types';
 import { localToWorld, worldToLocal, rotatePoint, calculateBoundingBox } from './utils/math';
 import { 
@@ -344,6 +345,65 @@ export default function App() {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 2000); // automatically close after 2 seconds!
   };
+
+  const [dialogConfig, setDialogConfig] = useState<CustomDialogConfig | null>(null);
+
+  useEffect(() => {
+    window.customAlert = (message: string, title: string = "Notice") => {
+      return new Promise<void>((resolve) => {
+        setDialogConfig({
+          type: 'alert',
+          title,
+          message,
+          onConfirm: () => {
+            setDialogConfig(null);
+            resolve();
+          },
+          onCancel: () => {
+            setDialogConfig(null);
+            resolve();
+          }
+        });
+      });
+    };
+
+    window.customConfirm = (message: string, title: string = "Confirmation") => {
+      return new Promise<boolean>((resolve) => {
+        setDialogConfig({
+          type: 'confirm',
+          title,
+          message,
+          onConfirm: () => {
+            setDialogConfig(null);
+            resolve(true);
+          },
+          onCancel: () => {
+            setDialogConfig(null);
+            resolve(false);
+          }
+        });
+      });
+    };
+
+    window.customPrompt = (message: string, defaultValue: string = "", title: string = "Input Needed") => {
+      return new Promise<string | null>((resolve) => {
+        setDialogConfig({
+          type: 'prompt',
+          title,
+          message,
+          defaultValue,
+          onConfirm: (val) => {
+            setDialogConfig(null);
+            resolve(val || "");
+          },
+          onCancel: () => {
+            setDialogConfig(null);
+            resolve(null);
+          }
+        });
+      });
+    };
+  }, []);
 
   useEffect(() => {
     const originalAlert = window.alert;
@@ -1841,14 +1901,10 @@ export default function App() {
       if (!clickedObj) return prev;
 
       const isPathClosedLocal = (obj: VectorObject): boolean => {
-        if (obj.type === 'shape') return true;
+        if (obj.type === 'shape' || obj.type === 'stroke') return true;
         if (obj.type === 'image') return false;
         if (!obj.points || obj.points.length < 3) return false;
-        const first = obj.points[0];
-        const last = obj.points[obj.points.length - 1];
-        const dx = first.x - last.x;
-        const dy = first.y - last.y;
-        return Math.sqrt(dx * dx + dy * dy) < 35;
+        return true;
       };
 
       const isClosed = isPathClosedLocal(clickedObj);
@@ -3747,6 +3803,8 @@ export default function App() {
       </div>
 
       </div>
+      
+      <CustomDialog config={dialogConfig} />
     </div>
   );
 }

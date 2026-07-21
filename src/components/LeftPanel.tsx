@@ -24,7 +24,9 @@ import {
   Armchair,
   Copy,
   PaintBucket,
-  CheckSquare
+  CheckSquare,
+  Edit2,
+  Check
 } from 'lucide-react';
 import { VectorObject, Layer } from '../types';
 import { getDailyLimitStatus } from '../utils/engine3D';
@@ -122,6 +124,8 @@ export default function LeftPanel({
   const [expandedNodes, setExpandedNodes] = useState<{ [id: string]: boolean }>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenamingText] = useState('');
+  const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const [editingLayerName, setEditingLayerName] = useState<string>('');
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [selected360Ids, setSelected360Ids] = useState<string[]>([]);
   const [customViewName, setCustomViewName] = useState('Front View');
@@ -226,10 +230,8 @@ export default function LeftPanel({
 
   // Advanced Layer operations
   const handleAddLayer = () => {
-    const rawName = prompt("Enter new layer name:", `Layer ${layers.length + 1}`);
-    if (!rawName) return;
-    const name = sanitizeString(rawName);
-    if (!name) return;
+    const defaultName = `Layer ${layers.length + 1}`;
+    const name = sanitizeString(defaultName) || defaultName;
     const id = `layer_${Date.now()}`;
     const nextZ = layers.length > 0 ? Math.max(...layers.map(l => l.zIndex)) + 1 : 1;
     const newLayer: Layer = {
@@ -1068,7 +1070,61 @@ export default function LeftPanel({
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="truncate max-w-[120px] font-black">{layer.name}</span>
+                        {editingLayerId === layer.id ? (
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              if (editingLayerName.trim()) {
+                                const sanitized = sanitizeString(editingLayerName.trim());
+                                if (sanitized) {
+                                  updateLayerProp(layer.id, { name: sanitized });
+                                }
+                              }
+                              setEditingLayerId(null);
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-1 flex-1 mr-2"
+                          >
+                            <input
+                              type="text"
+                              value={editingLayerName}
+                              onChange={(e) => setEditingLayerName(e.target.value)}
+                              className="bg-neutral-900 border border-neutral-800 text-xs text-white rounded-lg px-2 py-0.5 focus:outline-none focus:border-amber-500 font-bold w-full"
+                              autoFocus
+                              onBlur={() => {
+                                if (editingLayerName.trim()) {
+                                  const sanitized = sanitizeString(editingLayerName.trim());
+                                  if (sanitized) {
+                                    updateLayerProp(layer.id, { name: sanitized });
+                                  }
+                                }
+                                setEditingLayerId(null);
+                              }}
+                            />
+                            <button
+                              type="submit"
+                              className="text-emerald-400 hover:text-emerald-300 p-1 shrink-0"
+                              title="Save Layer Name"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                          </form>
+                        ) : (
+                          <div className="flex items-center gap-1.5 truncate max-w-[140px] group/layer flex-1">
+                            <span className="truncate font-black">{layer.name}</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingLayerId(layer.id);
+                                setEditingLayerName(layer.name);
+                              }}
+                              className="opacity-0 group-hover/layer:opacity-100 p-0.5 text-neutral-400 hover:text-amber-400 transition-opacity"
+                              title="Edit Layer Name"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
                         <div className="flex items-center gap-1.5">
                           {/* Visibility Toggle */}
                           <button

@@ -35,6 +35,7 @@ import {
 import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings } from '../types';
 import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint } from '../utils/math';
 import { extrude2DTo3D, deleteFace3D, extrudeFace3D, extrudeEdge3D } from '../utils/engine3D';
+import CustomSelect from './CustomSelect';
 
 const hslToHex = (h: number, s: number = 100, l: number = 50): string => {
   l /= 100;
@@ -223,6 +224,8 @@ export default function RightPanel({
   const [smartCheckedIds, setSmartCheckedIds] = useState<{ [id: string]: boolean }>({});
   const [faceExtrudeDist, setFaceExtrudeDist] = useState<number>(30);
   const [edgeExtrudeDist, setEdgeExtrudeDist] = useState<number>(30);
+  const [link360DrawingId, setLink360DrawingId] = useState<string>('');
+  const [link360Angle, setLink360Angle] = useState<string>('0');
 
   // Global Multi-Drawing Lasso states and logic
   const [globalLassoSelectedMap, setGlobalLassoSelectedMap] = useState<{
@@ -2010,19 +2013,16 @@ export default function RightPanel({
               <div className="space-y-1.5">
                 <span className="text-[10px] text-neutral-400 block font-bold uppercase tracking-wide">Add Child to {obj.name}</span>
                 <div className="flex gap-1.5">
-                  <select
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        relateChildToParent(obj.id, e.target.value);
+                  <CustomSelect
+                    value=""
+                    onChange={(val) => {
+                      if (val) {
+                        relateChildToParent(obj.id, val);
                         setActiveMenuObjectId(null);
                         setActiveMenuType(null);
                       }
                     }}
-                    className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1.5 text-xs text-white outline-none focus:border-amber-500 font-bold"
-                    defaultValue=""
-                  >
-                    <option value="" disabled>-- Choose Drawing --</option>
-                    {Object.values(objects)
+                    options={Object.values(objects)
                       .filter(o => {
                         // Cannot be itself
                         if (o.id === obj.id) return false;
@@ -2036,18 +2036,18 @@ export default function RightPanel({
                         }
                         return true;
                       })
-                      .map(o => (
-                        <option key={o.id} value={o.id}>{o.name}</option>
-                      ))
+                      .map(o => ({ value: o.id, label: o.name }))
                     }
-                  </select>
+                    placeholder="-- Choose Drawing --"
+                    className="flex-1"
+                  />
                   <button
                     type="button"
                     onClick={() => {
                       setActiveMenuObjectId(null);
                       setActiveMenuType(null);
                     }}
-                    className="px-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-bold rounded-lg transition-all"
+                    className="px-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-bold rounded-lg transition-all text-xs"
                   >
                     ✕
                   </button>
@@ -2059,21 +2059,18 @@ export default function RightPanel({
               <div className="space-y-1.5">
                 <span className="text-[10px] text-neutral-400 block font-bold uppercase tracking-wide">Add Sibling to {obj.name}</span>
                 <div className="flex gap-1.5">
-                  <select
-                    onChange={(e) => {
-                      if (e.target.value) {
+                  <CustomSelect
+                    value=""
+                    onChange={(val) => {
+                      if (val) {
                         if (obj.parentId) {
-                          relateChildToParent(obj.parentId, e.target.value);
+                          relateChildToParent(obj.parentId, val);
                         }
                         setActiveMenuObjectId(null);
                         setActiveMenuType(null);
                       }
                     }}
-                    className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1.5 text-xs text-white outline-none focus:border-amber-500 font-bold"
-                    defaultValue=""
-                  >
-                    <option value="" disabled>-- Choose Drawing --</option>
-                    {Object.values(objects)
+                    options={Object.values(objects)
                       .filter(o => {
                         if (o.id === obj.id) return false;
                         if (obj.parentId) {
@@ -2086,18 +2083,18 @@ export default function RightPanel({
                         }
                         return true;
                       })
-                      .map(o => (
-                        <option key={o.id} value={o.id}>{o.name}</option>
-                      ))
+                      .map(o => ({ value: o.id, label: o.name }))
                     }
-                  </select>
+                    placeholder="-- Choose Drawing --"
+                    className="flex-1"
+                  />
                   <button
                     type="button"
                     onClick={() => {
                       setActiveMenuObjectId(null);
                       setActiveMenuType(null);
                     }}
-                    className="px-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-bold rounded-lg transition-all"
+                    className="px-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-bold rounded-lg transition-all text-xs"
                   >
                     ✕
                   </button>
@@ -3461,8 +3458,8 @@ export default function RightPanel({
 
                           <div className="grid grid-cols-2 gap-2 pt-1">
                             <button
-                              onClick={() => {
-                                if (window.confirm("Clear all mesh colors on this object?")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Clear all mesh colors on this object?", "Clear Colors")) {
                                   handleClearMeshColors(selectedObject);
                                 }
                               }}
@@ -3617,8 +3614,8 @@ export default function RightPanel({
 
                           <div className="grid grid-cols-2 gap-2 pt-1">
                             <button
-                              onClick={() => {
-                                if (window.confirm("Reset all warp pins on this object?")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Reset all warp pins on this object?", "Reset Pins")) {
                                   handleResetWarpPins(selectedObject);
                                 }
                               }}
@@ -3714,8 +3711,8 @@ export default function RightPanel({
                         <div className="space-y-2 border-t border-neutral-800/40 pt-2.5">
                           <div className="grid grid-cols-2 gap-2">
                             <button
-                              onClick={() => {
-                                if (window.confirm("Reset all puppet pins on this object?")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Reset all puppet pins on this object?", "Reset Pins")) {
                                   const resetPins = (selectedObject.pins || []).map(p => ({
                                     ...p,
                                     currentLocalX: undefined,
@@ -3729,8 +3726,8 @@ export default function RightPanel({
                               Reset Pins
                             </button>
                             <button
-                              onClick={() => {
-                                if (window.confirm("Clear all puppet pins on this object?")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Clear all puppet pins on this object?", "Clear Pins")) {
                                   updateObject(selectedObject.id, { pins: [] });
                                 }
                               }}
@@ -3808,8 +3805,8 @@ export default function RightPanel({
                         <div className="space-y-2 border-t border-neutral-800/40 pt-2.5">
                           <div className="grid grid-cols-2 gap-2">
                             <button
-                              onClick={() => {
-                                if (window.confirm("Reset control cage handles?")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Reset control cage handles?", "Reset Cage")) {
                                   handleResetCage(selectedObject);
                                 }
                               }}
@@ -3818,8 +3815,8 @@ export default function RightPanel({
                               Reset Cage
                             </button>
                             <button
-                              onClick={() => {
-                                if (window.confirm("Disable control cage? This clears all cage-deformed states.")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Disable control cage? This clears all cage-deformed states.", "Disable Cage")) {
                                   handleDisableCage(selectedObject);
                                 }
                               }}
@@ -3948,8 +3945,8 @@ export default function RightPanel({
                         <div className="space-y-2 border-t border-neutral-800/40 pt-2.5">
                           <div className="grid grid-cols-2 gap-2">
                             <button
-                              onClick={() => {
-                                if (window.confirm("Reset warp mesh? This reverses all brush strokes.")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Reset warp mesh? This reverses all brush strokes.", "Reset Warp Mesh")) {
                                   handleResetLiquify(selectedObject);
                                 }
                               }}
@@ -3958,8 +3955,8 @@ export default function RightPanel({
                               Restore Original
                             </button>
                             <button
-                              onClick={() => {
-                                if (window.confirm("Clear warp mesh? This deletes the mesh entirely.")) {
+                              onClick={async () => {
+                                if (await window.customConfirm("Clear warp mesh? This deletes the mesh entirely.", "Clear Warp Mesh")) {
                                   handleDisableLiquify(selectedObject);
                                 }
                               }}
@@ -4192,16 +4189,18 @@ export default function RightPanel({
                         {/* Blend Mode */}
                         <div className="space-y-1.5">
                           <span className="text-neutral-500">Blend Mode</span>
-                          <select
+                          <CustomSelect
                             value={selectedObject.overlay?.blendMode ?? 'normal'}
-                            onChange={(e) => handleStyleChange('overlay', { blendMode: e.target.value })}
-                            className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-[10px] text-white outline-none"
-                          >
-                            <option value="normal">Normal (Tint)</option>
-                            <option value="multiply">Multiply (Darken)</option>
-                            <option value="screen">Screen (Lighten)</option>
-                            <option value="overlay">Overlay (Contrast)</option>
-                          </select>
+                            onChange={(val) => handleStyleChange('overlay', { blendMode: val })}
+                            options={[
+                              { value: "normal", label: "Normal (Tint)" },
+                              { value: "multiply", label: "Multiply (Darken)" },
+                              { value: "screen", label: "Screen (Lighten)" },
+                              { value: "overlay", label: "Overlay (Contrast)" }
+                            ]}
+                            placeholder="Select Blend Mode"
+                            className="w-full"
+                          />
                         </div>
 
                         {/* Opacity */}
@@ -4446,9 +4445,9 @@ export default function RightPanel({
                                     {view.angle}°
                                   </span>
                                   <button
-                                    onClick={(e) => {
+                                    onClick={async (e) => {
                                       e.stopPropagation();
-                                      const nextAngle = prompt(`Enter new angle for "${view.name}" (0-359):`, view.angle.toString());
+                                      const nextAngle = await window.customPrompt(`Enter new angle for "${view.name}" (0-359):`, view.angle.toString(), "Edit View Angle");
                                       if (nextAngle !== null) {
                                         const parsed = parseInt(nextAngle);
                                         if (!isNaN(parsed)) {
@@ -4465,9 +4464,10 @@ export default function RightPanel({
                                     <Settings className="w-3.5 h-3.5" />
                                   </button>
                                   <button
-                                    onClick={(e) => {
+                                    onClick={async (e) => {
                                       e.stopPropagation();
-                                      if (confirm(`Remove view "${view.name}"?`)) {
+                                      const confirmed = await window.customConfirm(`Are you sure you want to remove view "${view.name}"?`, "Remove View");
+                                      if (confirmed) {
                                         const updatedViews = (selectedObject.views360 || []).filter(v => v.id !== view.id);
                                         updateObject(selectedObject.id, { views360: updatedViews });
                                         // Unhide drawing so the user doesn't lose it
@@ -4489,20 +4489,19 @@ export default function RightPanel({
                         <div className="bg-neutral-950 p-2.5 rounded-xl border border-neutral-900 space-y-2">
                           <span className="text-[9px] font-black uppercase text-neutral-500 block">Link Drawing as View</span>
                           <div className="flex gap-2">
-                            <select
-                              id="add-360-view-select"
-                              className="bg-neutral-900 border border-neutral-800 rounded-lg text-xs p-1.5 text-neutral-300 outline-none flex-1"
-                            >
-                              <option value="">Select Drawing...</option>
-                              {Object.values(objects)
+                            <CustomSelect
+                              value={link360DrawingId}
+                              onChange={(val) => setLink360DrawingId(val)}
+                              options={Object.values(objects)
                                 .filter(obj => obj.id !== selectedObject.id && obj.type !== '360_container')
-                                .map(obj => (
-                                  <option key={obj.id} value={obj.id}>{obj.name}</option>
-                                ))
+                                .map(obj => ({ value: obj.id, label: obj.name }))
                               }
-                            </select>
+                              placeholder="Select Drawing..."
+                              className="flex-1"
+                            />
                             <input
-                              id="add-360-view-angle"
+                              value={link360Angle}
+                              onChange={(e) => setLink360Angle(e.target.value)}
                               type="number"
                               placeholder="Angle"
                               min="0"
@@ -4510,13 +4509,11 @@ export default function RightPanel({
                               className="bg-neutral-900 border border-neutral-800 rounded-lg text-xs p-1.5 text-neutral-300 w-16 outline-none text-center"
                             />
                             <button
-                              onClick={() => {
-                                const selEl = document.getElementById('add-360-view-select') as HTMLSelectElement;
-                                const angEl = document.getElementById('add-360-view-angle') as HTMLInputElement;
-                                const drawingId = selEl?.value;
-                                const angle = parseInt(angEl?.value || '0');
+                              onClick={async () => {
+                                const drawingId = link360DrawingId;
+                                const angle = parseInt(link360Angle || '0');
                                 if (!drawingId) {
-                                  alert("Please select a drawing first.");
+                                  await window.customAlert("Please select a drawing first.", "Selection Required");
                                   return;
                                 }
                                 const existingViews = selectedObject.views360 || [];
@@ -4531,8 +4528,8 @@ export default function RightPanel({
                                 });
                                 // Hide original drawing
                                 updateObject(drawingId, { isHidden: true });
-                                if (selEl) selEl.value = "";
-                                if (angEl) angEl.value = "";
+                                setLink360DrawingId("");
+                                setLink360Angle("0");
                               }}
                               className="bg-amber-500 hover:bg-amber-600 text-black text-xs font-bold px-3 py-1.5 rounded-lg flex items-center justify-center transition-colors cursor-pointer"
                             >
@@ -5231,24 +5228,24 @@ export default function RightPanel({
                           <div className="space-y-2">
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-[10px] text-neutral-400 shrink-0">Select Face</span>
-                              <select
-                                id="select-face-dropdown"
-                                value={selectedObject.selectedFaceIndex !== undefined ? selectedObject.selectedFaceIndex : -1}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value);
+                              <CustomSelect
+                                value={String(selectedObject.selectedFaceIndex !== undefined ? selectedObject.selectedFaceIndex : -1)}
+                                onChange={(val) => {
+                                  const num = parseInt(val);
                                   updateObject(selectedObject.id, {
-                                    selectedFaceIndex: val === -1 ? undefined : val
+                                    selectedFaceIndex: num === -1 ? undefined : num
                                   });
                                 }}
-                                className="w-full bg-neutral-950 text-xs text-neutral-300 border border-neutral-800 rounded px-2 py-1 focus:outline-none focus:border-amber-500"
-                              >
-                                <option value="-1">None (Highlight Disabled)</option>
-                                {(selectedObject.faces3D || []).map((face, idx) => (
-                                  <option key={idx} value={idx}>
-                                    Face #{idx} ({face.indices.length}-sided, Color: {face.fillColor})
-                                  </option>
-                                ))}
-                              </select>
+                                options={[
+                                  { value: "-1", label: "None (Highlight Disabled)" },
+                                  ...(selectedObject.faces3D || []).map((face, idx) => ({
+                                    value: String(idx),
+                                    label: `Face #${idx} (${face.indices.length}-sided, Color: ${face.fillColor})`
+                                  }))
+                                ]}
+                                placeholder="None (Highlight Disabled)"
+                                className="w-full"
+                              />
                             </div>
 
                             {selectedObject.selectedFaceIndex !== undefined && (
@@ -5355,44 +5352,47 @@ export default function RightPanel({
                           <div className="space-y-2">
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-[10px] text-neutral-400 shrink-0">Select Edge</span>
-                              <select
-                                id="select-edge-dropdown"
-                                value={selectedObject.selectedEdgeIndex !== undefined ? selectedObject.selectedEdgeIndex : -1}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value);
-                                  updateObject(selectedObject.id, {
-                                    selectedEdgeIndex: val === -1 ? undefined : val
-                                  });
-                                }}
-                                className="w-full bg-neutral-950 text-xs text-neutral-300 border border-neutral-800 rounded px-2 py-1 focus:outline-none focus:border-amber-500"
-                              >
-                                <option value="-1">None (Highlight Disabled)</option>
-                                {(() => {
-                                  const edgesList: [number, number][] = [];
-                                  if (selectedObject.faces3D) {
-                                    const edgeSet = new Set<string>();
-                                    selectedObject.faces3D.forEach(face => {
-                                      const len = face.indices.length;
-                                      for (let i = 0; i < len; i++) {
-                                        const v0 = face.indices[i];
-                                        const v1 = face.indices[(i + 1) % len];
-                                        const min = Math.min(v0, v1);
-                                        const max = Math.max(v0, v1);
-                                        const key = `${min}_${max}`;
-                                        if (!edgeSet.has(key)) {
-                                          edgeSet.add(key);
-                                          edgesList.push([min, max]);
-                                        }
+                              {(() => {
+                                const edgesList: [number, number][] = [];
+                                if (selectedObject.faces3D) {
+                                  const edgeSet = new Set<string>();
+                                  selectedObject.faces3D.forEach(face => {
+                                    const len = face.indices.length;
+                                    for (let i = 0; i < len; i++) {
+                                      const v0 = face.indices[i];
+                                      const v1 = face.indices[(i + 1) % len];
+                                      const min = Math.min(v0, v1);
+                                      const max = Math.max(v0, v1);
+                                      const key = `${min}_${max}`;
+                                      if (!edgeSet.has(key)) {
+                                        edgeSet.add(key);
+                                        edgesList.push([min, max]);
                                       }
-                                    });
-                                  }
-                                  return edgesList.map((edge, idx) => (
-                                    <option key={idx} value={idx}>
-                                      Edge #{idx} (Vertices {edge[0]}-{edge[1]})
-                                    </option>
-                                  ));
-                                })()}
-                              </select>
+                                    }
+                                  });
+                                }
+                                const selectOptions = [
+                                  { value: "-1", label: "None (Highlight Disabled)" },
+                                  ...edgesList.map((edge, idx) => ({
+                                    value: String(idx),
+                                    label: `Edge #${idx} (Vertices ${edge[0]}-${edge[1]})`
+                                  }))
+                                ];
+                                return (
+                                  <CustomSelect
+                                    value={String(selectedObject.selectedEdgeIndex !== undefined ? selectedObject.selectedEdgeIndex : -1)}
+                                    onChange={(val) => {
+                                      const num = parseInt(val);
+                                      updateObject(selectedObject.id, {
+                                        selectedEdgeIndex: num === -1 ? undefined : num
+                                      });
+                                    }}
+                                    options={selectOptions}
+                                    placeholder="None (Highlight Disabled)"
+                                    className="w-full"
+                                  />
+                                );
+                              })()}
                             </div>
 
                             {selectedObject.selectedEdgeIndex !== undefined && (
@@ -6905,19 +6905,16 @@ export default function RightPanel({
                     Select drawings to attach:
                   </label>
                   <div className="flex gap-1.5">
-                    <select
+                    <CustomSelect
                       value={attachSelectedId}
-                      onChange={(e) => handleAddAttachmentPiece(e.target.value)}
-                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-2 py-1.5 text-xs text-white outline-none focus:border-amber-500 font-bold"
-                    >
-                      <option value="">-- Add Drawing to Group --</option>
-                      {Object.values(objects)
+                      onChange={(val) => handleAddAttachmentPiece(val)}
+                      options={Object.values(objects)
                         .filter(o => !attachmentPieces.includes(o.id) && o.id !== selectedObject?.id)
-                        .map(o => (
-                          <option key={o.id} value={o.id}>{o.name}</option>
-                        ))
+                        .map(o => ({ value: o.id, label: o.name }))
                       }
-                    </select>
+                      placeholder="-- Add Drawing to Group --"
+                      className="flex-1"
+                    />
                   </div>
                 </div>
 
@@ -7227,29 +7224,23 @@ export default function RightPanel({
                     <div className="grid grid-cols-2 gap-2.5">
                       <div className="space-y-1">
                         <label className="text-[10px] text-neutral-400 block font-bold">Start Frame:</label>
-                        <select
-                          id="select-single-start"
-                          value={singleStartFrame}
-                          onChange={(e) => setSingleStartFrame(Number(e.target.value))}
-                          className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-white outline-none font-bold"
-                        >
-                          {frames.map(f => (
-                            <option key={f.index} value={f.index}>Frame {f.index + 1}</option>
-                          ))}
-                        </select>
+                        <CustomSelect
+                          value={String(singleStartFrame)}
+                          onChange={(val) => setSingleStartFrame(Number(val))}
+                          options={frames.map(f => ({ value: String(f.index), label: `Frame ${f.index + 1}` }))}
+                          placeholder="Select Frame"
+                          className="w-full"
+                        />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-neutral-400 block font-bold">End Frame:</label>
-                        <select
-                          id="select-single-end"
-                          value={singleEndFrame}
-                          onChange={(e) => setSingleEndFrame(Number(e.target.value))}
-                          className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-white outline-none font-bold"
-                        >
-                          {frames.map(f => (
-                            <option key={f.index} value={f.index}>Frame {f.index + 1}</option>
-                          ))}
-                        </select>
+                        <CustomSelect
+                          value={String(singleEndFrame)}
+                          onChange={(val) => setSingleEndFrame(Number(val))}
+                          options={frames.map(f => ({ value: String(f.index), label: `Frame ${f.index + 1}` }))}
+                          placeholder="Select Frame"
+                          className="w-full"
+                        />
                       </div>
                     </div>
                   </div>
@@ -7261,44 +7252,35 @@ export default function RightPanel({
                     <div className="grid grid-cols-2 gap-2.5">
                       <div className="space-y-1">
                         <label className="text-[10px] text-neutral-400 block font-bold">Ref Start (Pose):</label>
-                        <select
-                          id="select-multi-ref-start"
-                          value={multiRefStartFrame}
-                          onChange={(e) => setMultiRefStartFrame(Number(e.target.value))}
-                          className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-white outline-none font-bold"
-                        >
-                          {frames.map(f => (
-                            <option key={f.index} value={f.index}>Frame {f.index + 1}</option>
-                          ))}
-                        </select>
+                        <CustomSelect
+                          value={String(multiRefStartFrame)}
+                          onChange={(val) => setMultiRefStartFrame(Number(val))}
+                          options={frames.map(f => ({ value: String(f.index), label: `Frame ${f.index + 1}` }))}
+                          placeholder="Select Frame"
+                          className="w-full"
+                        />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] text-neutral-400 block font-bold">Ref End (Pose):</label>
-                        <select
-                          id="select-multi-ref-end"
-                          value={multiRefEndFrame}
-                          onChange={(e) => setMultiRefEndFrame(Number(e.target.value))}
-                          className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-white outline-none font-bold"
-                        >
-                          {frames.map(f => (
-                            <option key={f.index} value={f.index}>Frame {f.index + 1}</option>
-                          ))}
-                        </select>
+                        <CustomSelect
+                          value={String(multiRefEndFrame)}
+                          onChange={(val) => setMultiRefEndFrame(Number(val))}
+                          options={frames.map(f => ({ value: String(f.index), label: `Frame ${f.index + 1}` }))}
+                          placeholder="Select Frame"
+                          className="w-full"
+                        />
                       </div>
                     </div>
 
                     <div className="space-y-1 pt-1.5 border-t border-neutral-800/20">
                       <label className="text-[10px] text-neutral-400 block font-bold">Journey Target End-Position Frame:</label>
-                      <select
-                        id="select-multi-end-pos"
-                        value={multiEndPosFrame}
-                        onChange={(e) => setMultiEndPosFrame(Number(e.target.value))}
-                        className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none font-bold"
-                      >
-                        {frames.map(f => (
-                          <option key={f.index} value={f.index}>Frame {f.index + 1} (Location Marker)</option>
-                        ))}
-                      </select>
+                      <CustomSelect
+                        value={String(multiEndPosFrame)}
+                        onChange={(val) => setMultiEndPosFrame(Number(val))}
+                        options={frames.map(f => ({ value: String(f.index), label: `Frame ${f.index + 1} (Location Marker)` }))}
+                        placeholder="Select Frame"
+                        className="w-full"
+                      />
                       <p className="text-[9px] text-neutral-500 pt-0.5 leading-normal">
                         Character glides from initial pos in Ref Start Frame to target pos in End-Position Frame while repeating the cycle.
                       </p>
@@ -7339,32 +7321,34 @@ export default function RightPanel({
                   <div className="grid grid-cols-2 gap-2.5">
                     <div className="space-y-1">
                       <label className="text-[10px] text-neutral-400 block font-bold">Framerate (FPS):</label>
-                      <select
-                        id="select-generator-fps"
-                        value={fps}
-                        onChange={(e) => setFps(Number(e.target.value))}
-                        className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-white outline-none font-bold cursor-pointer"
-                      >
-                        <option value="12">12 FPS</option>
-                        <option value="24">24 FPS</option>
-                        <option value="30">30 FPS (Standard)</option>
-                        <option value="60">60 FPS (Ultra Smooth)</option>
-                      </select>
+                      <CustomSelect
+                        value={String(fps)}
+                        onChange={(val) => setFps(Number(val))}
+                        options={[
+                          { value: "12", label: "12 FPS" },
+                          { value: "24", label: "24 FPS" },
+                          { value: "30", label: "30 FPS (Standard)" },
+                          { value: "60", label: "60 FPS (Ultra Smooth)" }
+                        ]}
+                        placeholder="Framerate"
+                        className="w-full"
+                      />
                     </div>
 
                     <div className="space-y-1">
                       <label className="text-[10px] text-neutral-400 block font-bold">Easing Curve:</label>
-                      <select
-                        id="select-generator-easing"
+                      <CustomSelect
                         value={easeType}
-                        onChange={(e) => setEaseType(e.target.value as any)}
-                        className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-white outline-none font-bold cursor-pointer"
-                      >
-                        <option value="linear">Linear (Uniform)</option>
-                        <option value="easeIn">Ease In (Accelerate)</option>
-                        <option value="easeOut">Ease Out (Decelerate)</option>
-                        <option value="easeInOut">Ease In Out (Smooth)</option>
-                      </select>
+                        onChange={(val) => setEaseType(val as any)}
+                        options={[
+                          { value: "linear", label: "Linear (Uniform)" },
+                          { value: "easeIn", label: "Ease In (Accelerate)" },
+                          { value: "easeOut", label: "Ease Out (Decelerate)" },
+                          { value: "easeInOut", label: "Ease In Out (Smooth)" }
+                        ]}
+                        placeholder="Easing Curve"
+                        className="w-full"
+                      />
                     </div>
                   </div>
                 </div>
@@ -7423,32 +7407,29 @@ export default function RightPanel({
                   <div className="space-y-1.5">
                     <label className="text-[10px] text-neutral-400 block font-bold uppercase tracking-wide">Select Root Parent Drawing:</label>
                     <div className="flex gap-1.5">
-                      <select
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            updateObject(e.target.value, { parentId: null });
+                      <CustomSelect
+                        value=""
+                        onChange={(val) => {
+                          if (val) {
+                            updateObject(val, { parentId: null });
                             setActiveMenuObjectId(null);
                             setActiveMenuType(null);
                           }
                         }}
-                        className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1.5 text-xs text-white outline-none focus:border-amber-500 font-bold"
-                        defaultValue=""
-                      >
-                        <option value="" disabled>-- Select Drawing --</option>
-                        {Object.values(objects)
+                        options={Object.values(objects)
                           .filter(o => o.parentId !== null)
-                          .map(o => (
-                            <option key={o.id} value={o.id}>{o.name}</option>
-                          ))
+                          .map(o => ({ value: o.id, label: o.name }))
                         }
-                      </select>
+                        placeholder="-- Select Drawing --"
+                        className="flex-1"
+                      />
                       <button
                         type="button"
                         onClick={() => {
                           setActiveMenuObjectId(null);
                           setActiveMenuType(null);
                         }}
-                        className="px-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-bold rounded-lg transition-all"
+                        className="px-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-bold rounded-lg transition-all text-xs"
                       >
                         ✕
                       </button>
@@ -7482,31 +7463,25 @@ export default function RightPanel({
                 {/* Drawing A Selection */}
                 <div className="space-y-1">
                   <label className="text-[11px] text-neutral-400 font-bold block">First Drawing (A)</label>
-                  <select
+                  <CustomSelect
                     value={connDrawingA}
-                    onChange={(e) => setConnDrawingA(e.target.value)}
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-2.5 py-2 text-xs text-white outline-none focus:border-amber-500 font-bold"
-                  >
-                    <option value="">-- Select Drawing A --</option>
-                    {Object.values(objects).map(o => (
-                      <option key={o.id} value={o.id}>{o.name}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => setConnDrawingA(val)}
+                    options={Object.values(objects).map(o => ({ value: o.id, label: o.name }))}
+                    placeholder="-- Select Drawing A --"
+                    className="w-full"
+                  />
                 </div>
 
                 {/* Drawing B Selection */}
                 <div className="space-y-1">
                   <label className="text-[11px] text-neutral-400 font-bold block">Second Drawing (B)</label>
-                  <select
+                  <CustomSelect
                     value={connDrawingB}
-                    onChange={(e) => setConnDrawingB(e.target.value)}
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-2.5 py-2 text-xs text-white outline-none focus:border-amber-500 font-bold"
-                  >
-                    <option value="">-- Select Drawing B --</option>
-                    {Object.values(objects).map(o => (
-                      <option key={o.id} value={o.id}>{o.name}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => setConnDrawingB(val)}
+                    options={Object.values(objects).map(o => ({ value: o.id, label: o.name }))}
+                    placeholder="-- Select Drawing B --"
+                    className="w-full"
+                  />
                 </div>
 
                 {/* Hierarchy Direction */}

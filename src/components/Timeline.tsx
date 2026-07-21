@@ -15,6 +15,7 @@ import {
   Maximize,
   Sparkles
 } from 'lucide-react';
+import CustomSelect from './CustomSelect';
 
 interface TimelineProps {
   frames: any[];
@@ -394,20 +395,22 @@ export default function Timeline({
 
         {/* Batch Add Frames Section */}
         <div className="flex items-center gap-1.5 bg-neutral-950 border border-neutral-800 p-2 rounded-xl shrink-0 h-16">
-          <div className="flex flex-col justify-center">
+          <div className="flex flex-col justify-center min-w-24">
             <span className="text-[8px] text-neutral-500 font-black uppercase tracking-wider mb-0.5">Batch Add</span>
-            <select
-              value={batchCount}
-              onChange={(e) => setBatchCount(Number(e.target.value))}
-              className="bg-neutral-900 border border-neutral-800 text-neutral-300 text-[10px] rounded px-1.5 py-0.5 outline-none focus:border-amber-500 font-bold"
-            >
-              <option value="10">10 Frames</option>
-              <option value="20">20 Frames</option>
-              <option value="30">30 Frames</option>
-              <option value="40">40 Frames</option>
-              <option value="50">50 Frames</option>
-              <option value="100">100 Frames</option>
-            </select>
+            <CustomSelect
+              value={String(batchCount)}
+              onChange={(val) => setBatchCount(Number(val))}
+              options={[
+                { value: "10", label: "10 Frames" },
+                { value: "20", label: "20 Frames" },
+                { value: "30", label: "30 Frames" },
+                { value: "40", label: "40 Frames" },
+                { value: "50", label: "50 Frames" },
+                { value: "100", label: "100 Frames" }
+              ]}
+              placeholder="Batch Count"
+              className="w-full"
+            />
           </div>
           <button
             onClick={() => {

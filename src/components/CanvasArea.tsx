@@ -1030,6 +1030,7 @@ export default function CanvasArea({
 
     // 1. If paintMode is 'point', update colors of vertices close to the local brush coordinate
     const updatedPoints = smc.points.map(pt => {
+      if (smc.paintMode !== 'point') return pt;
       // Warp point dynamically if pins are present so we check distance to where the point is currently deformed!
       const deformedLocal = deformWithSmartWarp({ x: pt.originalX, y: pt.originalY }, obj.smartWarp);
       const dist = distance(localPos, deformedLocal);
@@ -1047,6 +1048,7 @@ export default function CanvasArea({
 
     // 2. If paintMode is 'cell', find cells whose center point is close to the local brush coordinate
     const updatedCells = smc.cells.map(cell => {
+      if (smc.paintMode !== 'cell') return cell;
       // Compute the average center point of cell's 4 corner vertices
       let sumX = 0;
       let sumY = 0;
@@ -1981,14 +1983,10 @@ export default function CanvasArea({
             } else {
               // Check if path is closed
               const isPathClosedLocal = (obj: VectorObject): boolean => {
-                if (obj.type === 'shape') return true;
+                if (obj.type === 'shape' || obj.type === 'stroke') return true;
                 if (obj.type === 'image') return false;
                 if (!obj.points || obj.points.length < 3) return false;
-                const first = obj.points[0];
-                const last = obj.points[obj.points.length - 1];
-                const dx = first.x - last.x;
-                const dy = first.y - last.y;
-                return Math.sqrt(dx * dx + dy * dy) < 35; // increased threshold for easier click closed path filling!
+                return true;
               };
 
               const isClosed = isPathClosedLocal(clickedObj);
