@@ -547,6 +547,7 @@ export default function App() {
 
   // Lasso selection area points state
   const [lassoPoints, setLassoPoints] = useState<Point[]>([]);
+  const inverseDeformRef = useRef<null | ((pts: Point[], obj: VectorObject) => Point[])>(null);
   const [fslPoints, setFslPoints] = useState<Point[]>([]);
   const [lassoMode, setLassoMode] = useState<'freehand' | 'pen'>('freehand');
   const [penLassoPoints, setPenLassoPoints] = useState<Point[]>([]);
@@ -3422,6 +3423,7 @@ export default function App() {
           adaptiveSubdivisionEnabled={adaptiveSubdivisionEnabled}
           adaptiveSubdivisionPoints={adaptiveSubdivisionPoints}
           fillToolColor={fillToolColor}
+          setFillToolColor={setFillToolColor}
           ignoreInnerDrawings={ignoreInnerDrawings}
           brushSettings={brushSettings}
           setBrushSettings={setBrushSettings}
@@ -3444,6 +3446,7 @@ export default function App() {
           setActiveContinuousDrawingId={setActiveContinuousDrawingId}
           lassoRestrictActive={lassoRestrictActive}
           setLassoRestrictActive={setLassoRestrictActive}
+          registerInverseDeformer={(fn) => { inverseDeformRef.current = fn; }}
         />
 
         {/* Right Collapsible Properties, Sliders, Smart Pinned Controls */}
@@ -3517,6 +3520,7 @@ export default function App() {
           ignoreInnerDrawings={ignoreInnerDrawings}
           setIgnoreInnerDrawings={setIgnoreInnerDrawings}
           applyColorFillToSelected={applyColorFillToSelected}
+          inverseDeformPoints={(pts, obj) => inverseDeformRef.current ? inverseDeformRef.current(pts, obj) : pts}
         />
       </div>
 

@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { RotateCcw, Sparkles, Feather, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
-import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings } from '../types';
+import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings, CurvePathState } from '../types';
 import { transform3DVertex, project3DVertex, getFaceLightColor, deformVertices3D } from '../utils/engine3D';
 import { Renderer3D } from '../utils/extruded3D';
 import { 
@@ -440,6 +440,168 @@ const getFullObjectBounds = (obj: VectorObject) => {
   return calculateBoundingBox(pts);
 };
 
+const initializeCurvePathState = (obj: VectorObject, hPointsCount = 10, vPointsCount = 10): CurvePathState => {
+  const bounds = getFullObjectBounds(obj);
+  const minX = bounds.x;
+  const minY = bounds.y;
+  
+  const yMid = minY + bounds.height * 0.5;
+  const hControlPoints: Point[] = [];
+  const hControlPoints0: Point[] = [];
+  for (let i = 0; i < hPointsCount; i++) {
+    const x = minX + (bounds.width > 0 ? (i / (hPointsCount - 1)) * bounds.width : 0);
+    const pt = { x, y: yMid };
+    hControlPoints.push({ ...pt });
+    hControlPoints0.push({ ...pt });
+  }
+
+  const xMid = minX + bounds.width * 0.5;
+  const vControlPoints: Point[] = [];
+  const vControlPoints0: Point[] = [];
+  for (let j = 0; j < vPointsCount; j++) {
+    const y = minY + (bounds.height > 0 ? (j / (vPointsCount - 1)) * bounds.height : 0);
+    const pt = { x: xMid, y };
+    vControlPoints.push({ ...pt });
+    vControlPoints0.push({ ...pt });
+  }
+
+  return {
+    active: true,
+    hPointsCount,
+    vPointsCount,
+    hControlPoints,
+    vControlPoints,
+    hControlPoints0,
+    vControlPoints0
+  };
+};
+
+const curvePathCache = new WeakMap<any, { hTransforms: any[]; vTransforms: any[] }>();
+
+const deformWithCurvePath = (p: Point, cps: CurvePathState): Point => {
+  if (!cps || !cps.active) return p;
+  
+  let cached = curvePathCache.get(cps);
+  if (!cached) {
+    const hCPs = cps.hControlPoints || [];
+    const hCPs0 = cps.hControlPoints0 || [];
+    const vCPs = cps.vControlPoints || [];
+    const vCPs0 = cps.vControlPoints0 || [];
+
+    const nH = hCPs.length;
+    const nV = vCPs.length;
+
+    const hTransforms = hCPs.map((cp, i) => {
+      const cp0 = hCPs0[i];
+      let theta = 0;
+      let scale = 1;
+      if (nH > 1 && cp0 && cp) {
+        const prevIdx = Math.max(0, i - 1);
+        const nextIdx = Math.min(nH - 1, i + 1);
+        if (prevIdx !== nextIdx) {
+          const origDirX = hCPs0[nextIdx].x - hCPs0[prevIdx].x;
+          const origDirY = hCPs0[nextIdx].y - hCPs0[prevIdx].y;
+          const origLen = Math.hypot(origDirX, origDirY);
+
+          const currDirX = hCPs[nextIdx].x - hCPs[prevIdx].x;
+          const currDirY = hCPs[nextIdx].y - hCPs[prevIdx].y;
+          const currLen = Math.hypot(currDirX, currDirY);
+
+          if (origLen > 0.001) {
+            theta = Math.atan2(currDirY, currDirX) - Math.atan2(origDirY, origDirX);
+            scale = Math.max(0.1, Math.min(10, currLen / origLen));
+          }
+        }
+      }
+      return { cp0, cp, cosT: Math.cos(theta), sinT: Math.sin(theta), scale };
+    });
+
+    const vTransforms = vCPs.map((cp, j) => {
+      const cp0 = vCPs0[j];
+      let theta = 0;
+      let scale = 1;
+      if (nV > 1 && cp0 && cp) {
+        const prevIdx = Math.max(0, j - 1);
+        const nextIdx = Math.min(nV - 1, j + 1);
+        if (prevIdx !== nextIdx) {
+          const origDirX = vCPs0[nextIdx].x - vCPs0[prevIdx].x;
+          const origDirY = vCPs0[nextIdx].y - vCPs0[prevIdx].y;
+          const origLen = Math.hypot(origDirX, origDirY);
+
+          const currDirX = vCPs[nextIdx].x - vCPs[prevIdx].x;
+          const currDirY = vCPs[nextIdx].y - vCPs[prevIdx].y;
+          const currLen = Math.hypot(currDirX, currDirY);
+
+          if (origLen > 0.001) {
+            theta = Math.atan2(currDirY, currDirX) - Math.atan2(origDirY, origDirX);
+            scale = Math.max(0.1, Math.min(10, currLen / origLen));
+          }
+        }
+      }
+      return { cp0, cp, cosT: Math.cos(theta), sinT: Math.sin(theta), scale };
+    });
+
+    cached = { hTransforms, vTransforms };
+    curvePathCache.set(cps, cached);
+  }
+
+  const { hTransforms, vTransforms } = cached;
+  const nH = hTransforms.length;
+  const nV = vTransforms.length;
+  const power = 2;
+  
+  let totalWeight = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+
+  for (let i = 0; i < nH; i++) {
+    const t = hTransforms[i];
+    if (!t.cp0 || !t.cp) continue;
+    const dx = p.x - t.cp0.x;
+    const dy = p.y - t.cp0.y;
+    const distSq = dx * dx + dy * dy;
+    
+    if (distSq < 0.001) {
+      return { x: t.cp.x, y: t.cp.y };
+    }
+    
+    const w = 1.0 / Math.pow(distSq, power / 2);
+    totalWeight += w;
+    
+    const rx = t.scale * (dx * t.cosT - dy * t.sinT);
+    const ry = t.scale * (dx * t.sinT + dy * t.cosT);
+    weightedX += w * (t.cp.x + rx);
+    weightedY += w * (t.cp.y + ry);
+  }
+
+  for (let j = 0; j < nV; j++) {
+    const t = vTransforms[j];
+    if (!t.cp0 || !t.cp) continue;
+    const dx = p.x - t.cp0.x;
+    const dy = p.y - t.cp0.y;
+    const distSq = dx * dx + dy * dy;
+    
+    if (distSq < 0.001) {
+      return { x: t.cp.x, y: t.cp.y };
+    }
+    
+    const w = 1.0 / Math.pow(distSq, power / 2);
+    totalWeight += w;
+    
+    const rx = t.scale * (dx * t.cosT - dy * t.sinT);
+    const ry = t.scale * (dx * t.sinT + dy * t.cosT);
+    weightedX += w * (t.cp.x + rx);
+    weightedY += w * (t.cp.y + ry);
+  }
+
+  if (totalWeight === 0) return p;
+  
+  return {
+    x: weightedX / totalWeight,
+    y: weightedY / totalWeight
+  };
+};
+
 const deformLocalPoint = (p: Point, drawObj: VectorObject, idx?: number, subPathIdx?: number): Point => {
   let curr = { ...p };
   try {
@@ -476,10 +638,65 @@ const deformLocalPoint = (p: Point, drawObj: VectorObject, idx?: number, subPath
     if (drawObj.smartWarp && drawObj.smartWarp.pins && drawObj.smartWarp.pins.length > 0) {
       curr = deformWithSmartWarp(curr, drawObj.smartWarp);
     }
+    if (drawObj.curvePathState && drawObj.curvePathState.active) {
+      curr = deformWithCurvePath(curr, drawObj.curvePathState);
+    }
   } catch (err) {
     console.error("deformLocalPoint error, falling back to current point:", err);
   }
   return curr;
+};
+
+const distanceSq = (p1: Point, p2: Point): number => {
+  const dx = p1.x - p2.x;
+  const dy = p1.y - p2.y;
+  return dx * dx + dy * dy;
+};
+
+const inverseDeformLocalPoint = (deformedLocal: Point, drawObj: VectorObject): Point => {
+  let p = { ...deformedLocal };
+  let bestP = { ...p };
+  
+  const getDeformed = (testPt: Point) => {
+    if (drawObj.type === 'image') {
+      const bounds = { x: 100, y: 100, width: 200, height: 200 };
+      return deformImagePoint(testPt, drawObj, bounds);
+    }
+    return deformLocalPoint(testPt, drawObj);
+  };
+
+  let bestDist = distanceSq(getDeformed(p), deformedLocal);
+  if (bestDist < 0.01) return bestP;
+  
+  let step = 16.0;
+  const tolerance = 0.1;
+  const maxIterations = 50;
+  
+  const dirs = [
+    { x: 1, y: 0 }, { x: -1, y: 0 },
+    { x: 0, y: 1 }, { x: 0, y: -1 }
+  ];
+  
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let improved = false;
+    for (const dir of dirs) {
+      const testP = { x: p.x + dir.x * step, y: p.y + dir.y * step };
+      const deformedTest = getDeformed(testP);
+      const dist = distanceSq(deformedTest, deformedLocal);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestP = { ...testP };
+        improved = true;
+      }
+    }
+    if (improved) {
+      p = { ...bestP };
+    } else {
+      step *= 0.5;
+      if (step < tolerance) break;
+    }
+  }
+  return bestP;
 };
 
 const deformImagePoint = (p: Point, drawObj: VectorObject, imgBounds: any): Point => {
@@ -502,6 +719,9 @@ const deformImagePoint = (p: Point, drawObj: VectorObject, imgBounds: any): Poin
     }
     if (drawObj.smartWarp && drawObj.smartWarp.pins && drawObj.smartWarp.pins.length > 0) {
       curr = deformWithSmartWarp(curr, drawObj.smartWarp);
+    }
+    if (drawObj.curvePathState && drawObj.curvePathState.active) {
+      curr = deformWithCurvePath(curr, drawObj.curvePathState);
     }
   } catch (err) {
     console.error("deformImagePoint error:", err);
@@ -724,28 +944,47 @@ const drawVariableWidthStrokeInternal = (
     applyBrushSettingsToCtx(ctx, brush, baseColor, brush.strokeWidth ?? 5);
   }
 
-  ctx.beginPath();
-  if (points.length === 1) {
-    const pt = points[0];
-    const r = Math.max(0.1, ((brush?.strokeWidth ?? 5) + widthOffset) / 2);
-    ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = baseColor;
-    ctx.fill();
-  } else {
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-      const xc = (points[i].x + points[i - 1].x) / 2;
-      const yc = (points[i].y + points[i - 1].y) / 2;
-      ctx.quadraticCurveTo(points[i - 1].x, points[i - 1].y, xc, yc);
+  // Helper to split points by gap flag
+  const segments: Point[][] = [];
+  let currentSegment: Point[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const pt = points[i];
+    if (pt.gap && currentSegment.length > 0) {
+      segments.push(currentSegment);
+      currentSegment = [];
     }
-    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
-
-    ctx.strokeStyle = baseColor;
-    ctx.lineWidth = (brush?.strokeWidth ?? 5) + widthOffset;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
+    currentSegment.push(pt);
   }
+  if (currentSegment.length > 0) {
+    segments.push(currentSegment);
+  }
+
+  segments.forEach(seg => {
+    if (seg.length === 0) return;
+    ctx.beginPath();
+    if (seg.length === 1) {
+      const pt = seg[0];
+      const r = Math.max(0.1, ((brush?.strokeWidth ?? 5) + widthOffset) / 2);
+      ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = baseColor;
+      ctx.fill();
+    } else {
+      ctx.moveTo(seg[0].x, seg[0].y);
+      for (let i = 1; i < seg.length; i++) {
+        const xc = (seg[i].x + seg[i - 1].x) / 2;
+        const yc = (seg[i].y + seg[i - 1].y) / 2;
+        ctx.quadraticCurveTo(seg[i - 1].x, seg[i - 1].y, xc, yc);
+      }
+      ctx.lineTo(seg[seg.length - 1].x, seg[seg.length - 1].y);
+
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = (brush?.strokeWidth ?? 5) + widthOffset;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+  });
+
   ctx.restore();
 };
 
@@ -796,6 +1035,7 @@ interface CanvasAreaProps {
   adaptiveSubdivisionEnabled: boolean;
   adaptiveSubdivisionPoints: number;
   fillToolColor?: string;
+  setFillToolColor?: (color: string) => void;
   ignoreInnerDrawings?: boolean;
   brushSettings?: BrushSettings;
   setBrushSettings?: React.Dispatch<React.SetStateAction<BrushSettings>>;
@@ -820,6 +1060,7 @@ interface CanvasAreaProps {
   setActiveContinuousDrawingId?: (id: string | null) => void;
   lassoRestrictActive?: boolean;
   setLassoRestrictActive?: (active: boolean) => void;
+  registerInverseDeformer?: (fn: (pts: Point[], obj: VectorObject) => Point[]) => void;
 }
 
 const initializeCageState = (obj: VectorObject): any => {
@@ -927,6 +1168,7 @@ export default function CanvasArea({
   adaptiveSubdivisionEnabled,
   adaptiveSubdivisionPoints,
   fillToolColor = '#4CAF50',
+  setFillToolColor,
   ignoreInnerDrawings = true,
   brushSettings,
   setBrushSettings,
@@ -951,7 +1193,16 @@ export default function CanvasArea({
   setActiveContinuousDrawingId,
   lassoRestrictActive = false,
   setLassoRestrictActive,
+  registerInverseDeformer,
 }: CanvasAreaProps) {
+  React.useEffect(() => {
+    if (registerInverseDeformer) {
+      registerInverseDeformer((pts, obj) => {
+        return pts.map(p => inverseDeformLocalPoint(p, obj));
+      });
+    }
+  }, [registerInverseDeformer]);
+
   const activeObjects: { [id: string]: VectorObject } = React.useMemo(() => {
     if (autoTween) {
       return getInterpolatedObjects(frames, currentFrameIndex, rawObjects);
@@ -1031,8 +1282,8 @@ export default function CanvasArea({
     // 1. If paintMode is 'point', update colors of vertices close to the local brush coordinate
     const updatedPoints = smc.points.map(pt => {
       if (smc.paintMode !== 'point') return pt;
-      // Warp point dynamically if pins are present so we check distance to where the point is currently deformed!
-      const deformedLocal = deformWithSmartWarp({ x: pt.originalX, y: pt.originalY }, obj.smartWarp);
+      // Warp point dynamically with all active deformations so we check distance to where the point is currently deformed!
+      const deformedLocal = deformLocalPoint({ x: pt.originalX, y: pt.originalY }, obj);
       const dist = distance(localPos, deformedLocal);
       
       if (dist <= brushSize) {
@@ -1057,7 +1308,7 @@ export default function CanvasArea({
       cell.pointIds.forEach(pId => {
         const pt = smc.points.find(p => p.id === pId);
         if (pt) {
-          const deformedLocal = deformWithSmartWarp({ x: pt.originalX, y: pt.originalY }, obj.smartWarp);
+          const deformedLocal = deformLocalPoint({ x: pt.originalX, y: pt.originalY }, obj);
           sumX += deformedLocal.x;
           sumY += deformedLocal.y;
         } else {
@@ -1413,8 +1664,26 @@ export default function CanvasArea({
       // Hit test main points
       const worldPoints = obj.points.map(p => localToWorld(p, obj.transform, pivot));
       if (obj.fillColor && obj.fillColor !== 'transparent') {
-        if (isPointInPolygon(coords, worldPoints)) {
-          return rawObj; // Return the container/original object
+        // Split by gaps to perform accurate polygon hit testing on each individual stroke segment
+        const subPolys: Point[][] = [];
+        let currentPoly: Point[] = [];
+        for (let i = 0; i < worldPoints.length; i++) {
+          const pt = worldPoints[i];
+          const origPt = obj.points[i];
+          if (origPt?.gap && currentPoly.length > 0) {
+            subPolys.push(currentPoly);
+            currentPoly = [];
+          }
+          currentPoly.push(pt);
+        }
+        if (currentPoly.length > 0) {
+          subPolys.push(currentPoly);
+        }
+
+        for (const poly of subPolys) {
+          if (poly.length >= 3 && isPointInPolygon(coords, poly)) {
+            return rawObj; // Return the container/original object
+          }
         }
       }
       const dist = pointToPolylineDistance(coords, worldPoints);
@@ -2065,10 +2334,69 @@ export default function CanvasArea({
 
     // 9. Eyedropper Tool logic
     if (activeTool === 'EYE') {
-      const clickedObj = performHitTest(coords);
-      if (clickedObj) {
-        alert(`Sampled Color -> Stroke: ${clickedObj.strokeColor}, Fill: ${clickedObj.fillColor}`);
-      }
+      const sampleAndSetColor = async () => {
+        let sampledColor = '#ffffff';
+        let found = false;
+
+        if ((window as any).EyeDropper) {
+          try {
+            const eyeDropper = new (window as any).EyeDropper();
+            const result = await eyeDropper.open();
+            sampledColor = result.sRGBHex;
+            found = true;
+          } catch (err) {
+            console.log("EyeDropper cancelled or failed, falling back to canvas pixel picker:", err);
+          }
+        }
+
+        if (!found) {
+          const canvas = frontCanvasRef.current;
+          if (canvas) {
+            const rect = canvas.getBoundingClientRect();
+            const appScale = (window as any).__appScale || 1;
+            const x = Math.round((e.clientX - rect.left) / appScale * (canvas.width / rect.width));
+            const y = Math.round((e.clientY - rect.top) / appScale * (canvas.height / rect.height));
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              try {
+                const pixel = ctx.getImageData(x, y, 1, 1).data;
+                const rgbToHex = (r: number, g: number, b: number): string => {
+                  const toHex = (val: number) => {
+                    const hex = val.toString(16);
+                    return hex.length === 1 ? '0' + hex : hex;
+                  };
+                  return '#' + toHex(r) + toHex(g) + toHex(b);
+                };
+                sampledColor = rgbToHex(pixel[0], pixel[1], pixel[2]);
+                found = true;
+              } catch (err) {
+                console.error("Canvas getImageData failed:", err);
+              }
+            }
+          }
+        }
+
+        if (found) {
+          if (setFillToolColor) {
+            setFillToolColor(sampledColor);
+          }
+          if (selectedObjectId && objects[selectedObjectId]) {
+            const obj = objects[selectedObjectId];
+            // If it's a closed path or has active fill, update fill color. Otherwise update stroke!
+            const isClosed = obj.points && obj.points.length >= 3 && 
+                             obj.points[0].x === obj.points[obj.points.length - 1].x &&
+                             obj.points[0].y === obj.points[obj.points.length - 1].y;
+            if (isClosed || (obj.fillColor && obj.fillColor !== 'transparent')) {
+              updateObjectProperties(obj.id, { fillColor: sampledColor });
+            } else {
+              updateObjectProperties(obj.id, { strokeColor: sampledColor });
+            }
+            historyPush();
+          }
+        }
+      };
+
+      sampleAndSetColor();
       return;
     }
 
@@ -2403,6 +2731,79 @@ export default function CanvasArea({
           if (clickedPtIdx !== -1) {
             setDragMode('cagePoint' as any);
             setDraggedMeshPointIndex(clickedPtIdx);
+            setDragStartPoint(coords);
+            historyPush();
+            return;
+          }
+        }
+      }
+      return;
+    }
+
+    // CPT (Curve Path Tool) tool pointer down logic
+    if (activeTool === 'CPT') {
+      let activeId = selectedObjectId;
+      if (!activeId) {
+        const clickedObj = performHitTest(coords);
+        if (clickedObj) {
+          setSelectedObjectId(clickedObj.id);
+          activeId = clickedObj.id;
+        }
+      }
+
+      if (activeId && objects[activeId]) {
+        let obj = objects[activeId];
+        
+        // Auto-initialize Curve Path state if not present or inactive
+        if (!obj.curvePathState || !obj.curvePathState.active) {
+          const initCps = initializeCurvePathState(obj);
+          setObjects(prev => ({
+            ...prev,
+            [activeId!]: {
+              ...prev[activeId!],
+              curvePathState: initCps
+            }
+          }));
+          obj = { ...obj, curvePathState: initCps };
+        }
+
+        if (obj.curvePathState) {
+          const cps = obj.curvePathState;
+          const hCPs = cps.hControlPoints || [];
+          const vCPs = cps.vControlPoints || [];
+          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+          
+          let clickedIdx = -1;
+          let isH = false;
+          let minDist = 30 / zoomScale; // clickable handle radius
+
+          // 1. Check Horizontal control points
+          hCPs.forEach((pt, idx) => {
+            const worldPt = localToWorld(pt, obj.transform, localPivot);
+            const d = distance(coords, worldPt);
+            if (d < minDist) {
+              minDist = d;
+              clickedIdx = idx;
+              isH = true;
+            }
+          });
+
+          // 2. Check Vertical control points
+          if (clickedIdx === -1) {
+            vCPs.forEach((pt, idx) => {
+              const worldPt = localToWorld(pt, obj.transform, localPivot);
+              const d = distance(coords, worldPt);
+              if (d < minDist) {
+                minDist = d;
+                clickedIdx = idx;
+                isH = false;
+              }
+            });
+          }
+
+          if (clickedIdx !== -1) {
+            setDragMode(isH ? 'curvePathH' : 'curvePathV' as any);
+            setDraggedMeshPointIndex(clickedIdx);
             setDragStartPoint(coords);
             historyPush();
             return;
@@ -2985,6 +3386,59 @@ export default function CanvasArea({
           x: p.x + dx,
           y: p.y + dy
         })));
+      }
+      return;
+    }
+
+    if ((dragMode === 'curvePathH' || dragMode === 'curvePathV') && selectedObjectId && draggedMeshPointIndex !== null) {
+      const obj = objects[selectedObjectId];
+      if (obj && obj.curvePathState) {
+        const localPos = worldToLocal(coords, obj.transform, obj.pivots[0]);
+        setObjects(prev => {
+          if (!prev[selectedObjectId]) return prev;
+          const cps = prev[selectedObjectId].curvePathState;
+          if (!cps) return prev;
+          
+          if (dragMode === 'curvePathH') {
+            const hCPs = [...(cps.hControlPoints || [])];
+            if (hCPs[draggedMeshPointIndex]) {
+              hCPs[draggedMeshPointIndex] = {
+                ...hCPs[draggedMeshPointIndex],
+                x: Number(localPos.x.toFixed(2)),
+                y: Number(localPos.y.toFixed(2))
+              };
+            }
+            return {
+              ...prev,
+              [selectedObjectId]: {
+                ...prev[selectedObjectId],
+                curvePathState: {
+                  ...cps,
+                  hControlPoints: hCPs
+                }
+              }
+            };
+          } else {
+            const vCPs = [...(cps.vControlPoints || [])];
+            if (vCPs[draggedMeshPointIndex]) {
+              vCPs[draggedMeshPointIndex] = {
+                ...vCPs[draggedMeshPointIndex],
+                x: Number(localPos.x.toFixed(2)),
+                y: Number(localPos.y.toFixed(2))
+              };
+            }
+            return {
+              ...prev,
+              [selectedObjectId]: {
+                ...prev[selectedObjectId],
+                curvePathState: {
+                  ...cps,
+                  vControlPoints: vCPs
+                }
+              }
+            };
+          }
+        });
       }
       return;
     }
@@ -3664,11 +4118,15 @@ export default function CanvasArea({
       if (continuousDrawActive) {
         if (activeContinuousDrawingId && objects[activeContinuousDrawingId]) {
           const existingObj = objects[activeContinuousDrawingId];
+          const markedPts = pts.map((p, idx) => idx === 0 ? { ...p, gap: true } : p);
+          const updatedPoints = [...(existingObj.points || []), ...markedPts];
           const updatedSubPaths = [...(existingObj.subPaths || []), pts];
           const updatedObj: VectorObject = {
             ...existingObj,
+            points: updatedPoints,
             isContinuousDrawing: true,
             subPaths: updatedSubPaths,
+            joinedStrokesDemo: [...updatedPoints],
           };
           setObjects(prev => ({ ...prev, [activeContinuousDrawingId]: updatedObj }));
           setSelectedObjectId(activeContinuousDrawingId);
@@ -3683,6 +4141,7 @@ export default function CanvasArea({
             type: 'stroke',
             points: pts,
             subPaths: [],
+            joinedStrokesDemo: [...pts],
             strokeColor: brushSettings?.strokeColor ?? '#000000',
             strokeWidth: brushSettings?.strokeWidth ?? 3.5,
             fillColor: 'transparent',
@@ -4368,8 +4827,12 @@ export default function CanvasArea({
           let penDown = false;
           for (let i = 0; i < worldPoints.length; i++) {
             const isHidden = drawObj.hiddenPoints?.includes(i);
+            const isGap = localPoints[i]?.gap;
             if (isHidden) {
               penDown = false;
+            } else if (isGap) {
+              ctx.moveTo(worldPoints[i].x, worldPoints[i].y);
+              penDown = true;
             } else {
               if (!penDown) {
                 ctx.moveTo(worldPoints[i].x, worldPoints[i].y);
@@ -4849,7 +5312,8 @@ export default function CanvasArea({
               angle: p.angle,
               jitterX: p.jitterX,
               jitterY: p.jitterY,
-              grainOpacity: p.grainOpacity
+              grainOpacity: p.grainOpacity,
+              gap: p.gap
             };
           });
           
@@ -4881,7 +5345,8 @@ export default function CanvasArea({
                   angle: p.angle,
                   jitterX: p.jitterX,
                   jitterY: p.jitterY,
-                  grainOpacity: p.grainOpacity
+                  grainOpacity: p.grainOpacity,
+                  gap: p.gap
                 };
               });
               drawVariableWidthStroke(ctx, worldSubPoints, drawObj.strokeColor, realismSettings, strokeBrush);
@@ -5009,8 +5474,8 @@ export default function CanvasArea({
           const cellPoints = cell.pointIds.map(pId => {
             const pt = smc.points.find(p => p.id === pId);
             if (!pt) return null;
-            // Apply warp pins to point positions dynamically if present!
-            const finalLocal = deformWithSmartWarp({ x: pt.originalX, y: pt.originalY }, obj.smartWarp);
+            // Apply all active deformations dynamically!
+            const finalLocal = deformLocalPoint({ x: pt.originalX, y: pt.originalY }, obj);
             return localToWorld(finalLocal, obj.transform, localPivot);
           });
 
@@ -5029,14 +5494,19 @@ export default function CanvasArea({
           }
         });
 
-        // 2. Draw each point that has a color (soft radial glow bleed)
+        // 2. Draw each point that has a color (soft radial glow bleed, scaling with drawing transform scale factor)
+        const scaleX = Math.abs(obj.transform.scaleX);
+        const scaleY = Math.abs(obj.transform.scaleY);
+        const scaleFactor = (scaleX + scaleY) / 2;
+
         smc.points.forEach(pt => {
           if (!pt.color) return;
 
-          // Apply warp pins to point position dynamically if present!
-          const finalLocal = deformWithSmartWarp({ x: pt.originalX, y: pt.originalY }, obj.smartWarp);
+          // Apply all active deformations dynamically!
+          const finalLocal = deformLocalPoint({ x: pt.originalX, y: pt.originalY }, obj);
           const worldPt = localToWorld(finalLocal, obj.transform, localPivot);
-          const brushSize = smc.brushSize || 40;
+          const baseBrushSize = smc.brushSize || 40;
+          const brushSize = baseBrushSize * scaleFactor;
 
           ctx.save();
           ctx.globalAlpha = pt.opacity !== undefined ? pt.opacity : 1.0;
@@ -5380,6 +5850,73 @@ export default function CanvasArea({
           });
         }
         
+        ctx.restore();
+      }
+    }
+
+    // CPT (Curve Path Tool) overlay rendering
+    if (activeTool === 'CPT' && effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
+      const obj = objects[effectiveSelectedObjectId];
+      if (obj.curvePathState && obj.curvePathState.active) {
+        const cps = obj.curvePathState;
+        const hCPs = cps.hControlPoints || [];
+        const vCPs = cps.vControlPoints || [];
+        const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+        
+        ctx.save();
+        
+        // Convert local control points to world space
+        const worldH = hCPs.map(pt => localToWorld(pt, obj.transform, localPivot));
+        const worldV = vCPs.map(pt => localToWorld(pt, obj.transform, localPivot));
+
+        // 1. Draw horizontal spline curve line
+        if (worldH.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(worldH[0].x, worldH[0].y);
+          for (let i = 1; i < worldH.length; i++) {
+            ctx.lineTo(worldH[i].x, worldH[i].y);
+          }
+          ctx.strokeStyle = '#06B6D4'; // cyan-500
+          ctx.lineWidth = 2.5 / zoomScale;
+          ctx.stroke();
+        }
+
+        // 2. Draw vertical spline curve line
+        if (worldV.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(worldV[0].x, worldV[0].y);
+          for (let j = 1; j < worldV.length; j++) {
+            ctx.lineTo(worldV[j].x, worldV[j].y);
+          }
+          ctx.strokeStyle = '#F59E0B'; // amber-500
+          ctx.lineWidth = 2.5 / zoomScale;
+          ctx.stroke();
+        }
+
+        // 3. Draw horizontal control point handles
+        worldH.forEach((pt, idx) => {
+          ctx.beginPath();
+          const r = (dragMode === 'curvePathH' && draggedMeshPointIndex === idx) ? 8 : 5;
+          ctx.arc(pt.x, pt.y, r / zoomScale, 0, Math.PI * 2);
+          ctx.fillStyle = (dragMode === 'curvePathH' && draggedMeshPointIndex === idx) ? '#22D3EE' : '#06B6D4';
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 1.5 / zoomScale;
+          ctx.fill();
+          ctx.stroke();
+        });
+
+        // 4. Draw vertical control point handles
+        worldV.forEach((pt, idx) => {
+          ctx.beginPath();
+          const r = (dragMode === 'curvePathV' && draggedMeshPointIndex === idx) ? 8 : 5;
+          ctx.arc(pt.x, pt.y, r / zoomScale, 0, Math.PI * 2);
+          ctx.fillStyle = (dragMode === 'curvePathV' && draggedMeshPointIndex === idx) ? '#FBBF24' : '#F59E0B';
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 1.5 / zoomScale;
+          ctx.fill();
+          ctx.stroke();
+        });
+
         ctx.restore();
       }
     }

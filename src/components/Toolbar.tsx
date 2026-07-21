@@ -59,6 +59,7 @@ export default function Toolbar({
     { id: 'LQB', name: 'Liquify Brush', label: 'Liquify Brush (LQB)', icon: SparklesIcon, desc: 'Push, pinch, bulge, or twist drawing geometry with a brush' },
     { id: 'CON', name: 'Constraint', label: 'Constraints (CON)', icon: AlignCenterIcon },
     { id: 'MOT', name: 'Motion Path', label: 'Motion Path (MOT)', icon: TrendingUpIcon },
+    { id: 'CPT', name: 'Curve Path', label: 'Curve Path Tool (CPT)', icon: GitForkIcon, desc: 'Warp and blend drawing along interactive horizontal and vertical spine lines' },
     { id: 'EYE', name: 'Eyedropper', label: 'Eyedropper (EYE)', icon: EyedropperIcon },
     { id: 'ZOM', name: 'Zoom & Pan', label: 'Zoom & Pan (ZOM)', icon: ZoomInIcon, desc: 'Pinch with two fingers to zoom, or drag with single touch/pointer to pan smoothly in any direction.' },
   ];
@@ -133,6 +134,7 @@ function FeatherIcon(props: any) { return <PenTool {...props} /> }
 function PinIcon(props: any) { return <MapPin {...props} /> }
 function AnchorIcon(props: any) { return <CircleDot {...props} /> }
 function BoneIcon(props: any) { return <GitFork {...props} /> }
+function GitForkIcon(props: any) { return <GitFork {...props} /> }
 function ZapIcon(props: any) { return <Zap {...props} /> }
 function PaintBucketIcon(props: any) { return <Palette {...props} /> }
 function PaletteIcon(props: any) { return <Palette {...props} /> }

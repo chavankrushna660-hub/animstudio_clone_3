@@ -7,6 +7,7 @@ export interface Point {
   jitterX?: number;
   jitterY?: number;
   grainOpacity?: number;
+  gap?: boolean;
 }
 
 declare global {
@@ -192,6 +193,7 @@ export interface VectorObject {
   isLocked: boolean;
   isHidden: boolean;
   isContinuousDrawing?: boolean;
+  joinedStrokesDemo?: Point[];
   hiddenPoints?: number[];
   hiddenSubPaths?: { [subPathIdx: number]: number[] };
   hiddenLassoRegions?: { localLassoPoints: Point[] }[];
@@ -276,6 +278,17 @@ export interface VectorObject {
   splineTwistPoints?: { t: number; rotation: number; scale: number; id: string }[];
   splineUniformStretch?: boolean;
   splineOriginalPoints?: Point[];
+  curvePathState?: CurvePathState;
+}
+
+export interface CurvePathState {
+  active: boolean;
+  hPointsCount: number;
+  vPointsCount: number;
+  hControlPoints: Point[];
+  vControlPoints: Point[];
+  hControlPoints0: Point[];
+  vControlPoints0: Point[];
 }
 
 export interface CagePoint {

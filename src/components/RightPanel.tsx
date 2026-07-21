@@ -30,7 +30,8 @@ import {
   Box,
   Palette,
   MapPin,
-  Scissors
+  Scissors,
+  GitFork
 } from 'lucide-react';
 import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings } from '../types';
 import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint } from '../utils/math';
@@ -140,6 +141,7 @@ interface RightPanelProps {
   ignoreInnerDrawings?: boolean;
   setIgnoreInnerDrawings?: React.Dispatch<React.SetStateAction<boolean>>;
   applyColorFillToSelected?: () => void;
+  inverseDeformPoints?: (pts: Point[], obj: VectorObject) => Point[];
 }
 
 const isChildInsideParent = (
@@ -219,6 +221,7 @@ export default function RightPanel({
   ignoreInnerDrawings = true,
   setIgnoreInnerDrawings,
   applyColorFillToSelected,
+  inverseDeformPoints,
 }: RightPanelProps) {
   // Batch/Smart Controls check state
   const [smartCheckedIds, setSmartCheckedIds] = useState<{ [id: string]: boolean }>({});
@@ -944,7 +947,8 @@ export default function RightPanel({
 
     targetObjects.forEach(obj => {
       const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
-      const localLassoPoints = lassoPoints.map(wp => worldToLocal(wp, obj.transform, localPivot));
+      const localDeformedPoints = lassoPoints.map(wp => worldToLocal(wp, obj.transform, localPivot));
+      const localLassoPoints = inverseDeformPoints ? inverseDeformPoints(localDeformedPoints, obj) : localDeformedPoints;
       
       const currentFills = obj.lassoFills || [];
       const updatedFills = [...currentFills, { localLassoPoints, color: lassoColor }];
@@ -3969,6 +3973,239 @@ export default function RightPanel({
                           <button
                             onClick={() => setActiveTool('SEL')}
                             className="w-full py-1.5 bg-pink-500 text-neutral-950 hover:bg-pink-400 text-[10px] font-black rounded-lg transition-all uppercase tracking-wider text-center block mt-2"
+                          >
+                            ✓ Complete
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* CURVE PATH DEFORMATION PANEL */}
+                {activeTool === 'CPT' && (
+                  <div className="space-y-4 bg-cyan-500/5 p-4 rounded-2xl border border-cyan-400/20 shadow-lg shadow-black/20 animate-fade-in">
+                    <div className="flex items-center justify-between border-b border-cyan-500/10 pb-2.5">
+                      <span className="text-xs font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <GitFork className="w-4 h-4 text-cyan-500 rotate-90" />
+                        CURVE PATH WARP
+                      </span>
+                    </div>
+
+                    {!selectedObject ? (
+                      <p className="text-[10px] text-neutral-400 font-bold leading-normal">
+                        Select a drawing on the canvas first to warp it using the Curve Path Tool!
+                      </p>
+                    ) : (
+                      <div className="space-y-4 text-xs">
+                        <p className="text-[10px] text-neutral-400 leading-normal font-bold">
+                          The Curve Path Tool lets you smoothly blend, stretch, bend, or rotate your drawings by dragging the cyan (horizontal) and yellow (vertical) control lines.
+                        </p>
+
+                        {/* Controls for horizontal points */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[10px] text-neutral-400">
+                            <span className="font-bold uppercase tracking-wider">Horizontal Spine Points</span>
+                            <span className="text-cyan-400 font-bold font-mono">
+                              {selectedObject.curvePathState?.hPointsCount || 10}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="3"
+                            max="20"
+                            value={selectedObject.curvePathState?.hPointsCount || 10}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value);
+                              // Re-initialize with new horizontal points count
+                              const hControlPoints: Point[] = [];
+                              const hControlPoints0: Point[] = [];
+                              
+                              // Helper to calculate bounds locally
+                              let pts = [...(selectedObject.points || [])];
+                              if (selectedObject.subPaths && selectedObject.subPaths.length > 0) {
+                                selectedObject.subPaths.forEach((sub: any) => {
+                                  pts = pts.concat(sub);
+                                });
+                              }
+                              if (pts.length > 0) {
+                                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                                pts.forEach(p => {
+                                  if (p.x < minX) minX = p.x;
+                                  if (p.x > maxX) maxX = p.x;
+                                  if (p.y < minY) minY = p.y;
+                                  if (p.y > maxY) maxY = p.y;
+                                });
+                                const bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+                                const yMid = bounds.y + bounds.height * 0.5;
+                                for (let i = 0; i < val; i++) {
+                                  const x = bounds.x + (bounds.width > 0 ? (i / (val - 1)) * bounds.width : 0);
+                                  const pt = { x, y: yMid };
+                                  hControlPoints.push({ ...pt });
+                                  hControlPoints0.push({ ...pt });
+                                }
+                              }
+                              
+                              updateObject(selectedObject.id, {
+                                curvePathState: {
+                                  active: true,
+                                  hPointsCount: val,
+                                  vPointsCount: selectedObject.curvePathState?.vPointsCount || 10,
+                                  hControlPoints,
+                                  hControlPoints0,
+                                  vControlPoints: selectedObject.curvePathState?.vControlPoints || [],
+                                  vControlPoints0: selectedObject.curvePathState?.vControlPoints0 || []
+                                }
+                              });
+                            }}
+                            className="w-full accent-cyan-500 bg-neutral-900 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                        </div>
+
+                        {/* Controls for vertical points */}
+                        <div className="space-y-1 border-t border-neutral-800/40 pt-2.5">
+                          <div className="flex items-center justify-between text-[10px] text-neutral-400">
+                            <span className="font-bold uppercase tracking-wider">Vertical Spine Points</span>
+                            <span className="text-amber-400 font-bold font-mono">
+                              {selectedObject.curvePathState?.vPointsCount || 10}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="3"
+                            max="20"
+                            value={selectedObject.curvePathState?.vPointsCount || 10}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value);
+                              // Re-initialize with new vertical points count
+                              const vControlPoints: Point[] = [];
+                              const vControlPoints0: Point[] = [];
+                              
+                              // Helper to calculate bounds locally
+                              let pts = [...(selectedObject.points || [])];
+                              if (selectedObject.subPaths && selectedObject.subPaths.length > 0) {
+                                selectedObject.subPaths.forEach((sub: any) => {
+                                  pts = pts.concat(sub);
+                                });
+                              }
+                              if (pts.length > 0) {
+                                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                                pts.forEach(p => {
+                                  if (p.x < minX) minX = p.x;
+                                  if (p.x > maxX) maxX = p.x;
+                                  if (p.y < minY) minY = p.y;
+                                  if (p.y > maxY) maxY = p.y;
+                                });
+                                const bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+                                const xMid = bounds.x + bounds.width * 0.5;
+                                for (let j = 0; j < val; j++) {
+                                  const y = bounds.y + (bounds.height > 0 ? (j / (val - 1)) * bounds.height : 0);
+                                  const pt = { x: xMid, y };
+                                  vControlPoints.push({ ...pt });
+                                  vControlPoints0.push({ ...pt });
+                                }
+                              }
+                              
+                              updateObject(selectedObject.id, {
+                                curvePathState: {
+                                  active: true,
+                                  hPointsCount: selectedObject.curvePathState?.hPointsCount || 10,
+                                  vPointsCount: val,
+                                  hControlPoints: selectedObject.curvePathState?.hControlPoints || [],
+                                  hControlPoints0: selectedObject.curvePathState?.hControlPoints0 || [],
+                                  vControlPoints,
+                                  vControlPoints0
+                                }
+                              });
+                            }}
+                            className="w-full accent-amber-500 bg-neutral-900 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="space-y-2 border-t border-neutral-800/40 pt-2.5">
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              onClick={() => {
+                                // Reset control points to their straight/undeformed state
+                                if (selectedObject.curvePathState) {
+                                  const hCount = selectedObject.curvePathState.hPointsCount;
+                                  const vCount = selectedObject.curvePathState.vPointsCount;
+                                  
+                                  let pts = [...(selectedObject.points || [])];
+                                  if (selectedObject.subPaths && selectedObject.subPaths.length > 0) {
+                                    selectedObject.subPaths.forEach((sub: any) => {
+                                      pts = pts.concat(sub);
+                                    });
+                                  }
+                                  if (pts.length > 0) {
+                                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                                    pts.forEach(p => {
+                                      if (p.x < minX) minX = p.x;
+                                      if (p.x > maxX) maxX = p.x;
+                                      if (p.y < minY) minY = p.y;
+                                      if (p.y > maxY) maxY = p.y;
+                                    });
+                                    const bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+                                    
+                                    const yMid = bounds.y + bounds.height * 0.5;
+                                    const hControlPoints: Point[] = [];
+                                    const hControlPoints0: Point[] = [];
+                                    for (let i = 0; i < hCount; i++) {
+                                      const x = bounds.x + (bounds.width > 0 ? (i / (hCount - 1)) * bounds.width : 0);
+                                      const pt = { x, y: yMid };
+                                      hControlPoints.push({ ...pt });
+                                      hControlPoints0.push({ ...pt });
+                                    }
+
+                                    const xMid = bounds.x + bounds.width * 0.5;
+                                    const vControlPoints: Point[] = [];
+                                    const vControlPoints0: Point[] = [];
+                                    for (let j = 0; j < vCount; j++) {
+                                      const y = bounds.y + (bounds.height > 0 ? (j / (vCount - 1)) * bounds.height : 0);
+                                      const pt = { x: xMid, y };
+                                      vControlPoints.push({ ...pt });
+                                      vControlPoints0.push({ ...pt });
+                                    }
+
+                                    updateObject(selectedObject.id, {
+                                      curvePathState: {
+                                        active: true,
+                                        hPointsCount: hCount,
+                                        vPointsCount: vCount,
+                                        hControlPoints,
+                                        hControlPoints0,
+                                        vControlPoints,
+                                        vControlPoints0
+                                      }
+                                    });
+                                  }
+                                }
+                              }}
+                              className="py-1.5 bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white text-[10px] font-black rounded-lg border border-neutral-800 transition-all uppercase tracking-wider"
+                            >
+                              Reset Curve
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (selectedObject.curvePathState) {
+                                  updateObject(selectedObject.id, {
+                                    curvePathState: {
+                                      ...selectedObject.curvePathState,
+                                      active: false
+                                    }
+                                  });
+                                }
+                              }}
+                              className="py-1.5 bg-neutral-900 hover:bg-rose-950 text-neutral-400 hover:text-rose-300 text-[10px] font-black rounded-lg border border-neutral-800 hover:border-rose-900 transition-all uppercase tracking-wider"
+                            >
+                              Disable Warp
+                            </button>
+                          </div>
+
+                          <button
+                            onClick={() => setActiveTool('SEL')}
+                            className="w-full py-1.5 bg-cyan-500 text-neutral-950 hover:bg-cyan-400 text-[10px] font-black rounded-lg transition-all uppercase tracking-wider text-center block mt-2"
                           >
                             ✓ Complete
                           </button>

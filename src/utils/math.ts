@@ -25,6 +25,10 @@ export function pointToPolylineDistance(p: Point, points: Point[]): number {
   if (points.length === 1) return distance(p, points[0]);
   let minDist = Infinity;
   for (let i = 0; i < points.length - 1; i++) {
+    // Skip segment if the next point is marked as a gap (start of a new stroke)
+    if (points[i + 1].gap) {
+      continue;
+    }
     const dist = pointToSegmentDistance(p, points[i], points[i + 1]);
     if (dist < minDist) {
       minDist = dist;
