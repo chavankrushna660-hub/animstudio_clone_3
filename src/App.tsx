@@ -1911,54 +1911,12 @@ export default function App() {
       const isClosed = isPathClosedLocal(clickedObj);
       const updated = { ...prev };
 
+      // Strictly apply fill color ONLY to the selected target drawing
       updated[id] = {
         ...clickedObj,
         fillColor: isClosed ? color : clickedObj.fillColor,
         strokeColor: !isClosed ? color : clickedObj.strokeColor
       };
-
-      const otherDrawings = (Object.values(prev) as VectorObject[]).filter(
-        o => o.id !== id && 
-             o.layerId === clickedObj.layerId && 
-             !o.isHidden && 
-             !o.isLocked && 
-             o.type !== '360_container'
-      );
-      const clickedBounds = calculateBoundingBox(clickedObj.points || []);
-      
-      otherDrawings.forEach(other => {
-        const otherBounds = calculateBoundingBox(other.points || []);
-        const overlap = !(clickedBounds.x + clickedBounds.width < otherBounds.x ||
-                          otherBounds.x + otherBounds.width < clickedBounds.x ||
-                          clickedBounds.y + clickedBounds.height < otherBounds.y ||
-                          otherBounds.y + otherBounds.height < clickedBounds.y);
-        if (overlap) {
-          const otherClosed = isPathClosedLocal(other);
-          updated[other.id] = {
-            ...other,
-            fillColor: otherClosed ? color : other.fillColor,
-            strokeColor: !otherClosed ? color : other.strokeColor
-          };
-        }
-      });
-
-      if (!ignoreInner && isClosed) {
-        otherDrawings.forEach(other => {
-          const otherBounds = calculateBoundingBox(other.points || []);
-          const isInside = (otherBounds.x >= clickedBounds.x && 
-                            otherBounds.y >= clickedBounds.y && 
-                            otherBounds.x + otherBounds.width <= clickedBounds.x + clickedBounds.width && 
-                            otherBounds.y + otherBounds.height <= clickedBounds.y + clickedBounds.height);
-          if (isInside) {
-            const otherClosed = isPathClosedLocal(other);
-            updated[other.id] = {
-              ...other,
-              fillColor: otherClosed ? color : other.fillColor,
-              strokeColor: !otherClosed ? color : other.strokeColor
-            };
-          }
-        });
-      }
 
       return updated;
     });

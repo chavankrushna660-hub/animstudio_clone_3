@@ -954,15 +954,13 @@ export default function RightPanel({
 
   // Deep Gap Filler handler
   const handleDeepFillGaps = () => {
-    let targetObjects = selectedObject 
-      ? [selectedObject] 
-      : Object.values(objects).filter(o => !o.isLocked && !o.isHidden && o.type !== 'image' && o.type !== 'text');
-
-    if (targetObjects.length === 0) {
-      setGapFillFeedback('No unlocked drawings found to fill gaps.');
+    if (!selectedObject) {
+      setGapFillFeedback('Please select a drawing on the canvas first.');
       setTimeout(() => setGapFillFeedback(null), 3500);
       return;
     }
+
+    let targetObjects = [selectedObject];
 
     let count = 0;
     targetObjects.forEach(obj => {
