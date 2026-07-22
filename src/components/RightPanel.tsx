@@ -31,10 +31,11 @@ import {
   Palette,
   MapPin,
   Scissors,
-  GitFork
+  GitFork,
+  Activity
 } from 'lucide-react';
 import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings } from '../types';
-import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint } from '../utils/math';
+import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint, finalizeContinuousObject } from '../utils/math';
 import { extrude2DTo3D, deleteFace3D, extrudeFace3D, extrudeEdge3D } from '../utils/engine3D';
 import CustomSelect from './CustomSelect';
 
@@ -2191,6 +2192,19 @@ export default function RightPanel({
                   <button
                     type="button"
                     onClick={() => {
+                      if (continuousDrawActive) {
+                        if (activeContinuousDrawingId && objects[activeContinuousDrawingId]) {
+                          const curObj = objects[activeContinuousDrawingId];
+                          const finalized = finalizeContinuousObject(curObj);
+                          setObjects(prev => ({
+                            ...prev,
+                            [activeContinuousDrawingId!]: finalized
+                          }));
+                        }
+                        if (setActiveContinuousDrawingId) {
+                          setActiveContinuousDrawingId(null);
+                        }
+                      }
                       if (setContinuousDrawActive) {
                         setContinuousDrawActive(!continuousDrawActive);
                       }
@@ -2226,7 +2240,9 @@ export default function RightPanel({
                       <span className="text-neutral-400">Sub-strokes Count:</span>
                       <span className="text-emerald-400 font-bold font-mono">
                         {activeContinuousDrawingId && objects[activeContinuousDrawingId]
-                          ? (objects[activeContinuousDrawingId].subPaths?.length ?? 0) + 1
+                          ? ((objects[activeContinuousDrawingId].subPaths?.length ?? 0) > 0 
+                              ? objects[activeContinuousDrawingId].subPaths!.length 
+                              : (objects[activeContinuousDrawingId].points ? 1 : 0))
                           : 0}
                       </span>
                     </div>
@@ -2235,6 +2251,14 @@ export default function RightPanel({
                       type="button"
                       disabled={!activeContinuousDrawingId || !objects[activeContinuousDrawingId]}
                       onClick={() => {
+                        if (activeContinuousDrawingId && objects[activeContinuousDrawingId]) {
+                          const curObj = objects[activeContinuousDrawingId];
+                          const finalized = finalizeContinuousObject(curObj);
+                          setObjects(prev => ({
+                            ...prev,
+                            [activeContinuousDrawingId!]: finalized
+                          }));
+                        }
                         if (setActiveContinuousDrawingId) {
                           setActiveContinuousDrawingId(null);
                         }
@@ -4314,6 +4338,152 @@ export default function RightPanel({
                             ✓ Complete
                           </button>
                         </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* FLEXIBLE CURVE LINE DEFORMER PANEL */}
+                {activeTool === 'CRV' && (
+                  <div className="space-y-4 bg-emerald-500/5 p-4 rounded-2xl border border-emerald-400/20 shadow-lg shadow-black/20 animate-fade-in">
+                    <div className="flex items-center justify-between border-b border-emerald-500/10 pb-2.5">
+                      <span className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                        <Activity className="w-4 h-4 text-emerald-500" />
+                        CURVE LINE DEFORMER
+                      </span>
+                    </div>
+
+                    {!selectedObject ? (
+                      <p className="text-[10px] text-neutral-400 font-bold leading-normal">
+                        Select a drawing on the canvas first to attach a flexible curve line to bend parts like a dog's tail, limb, or arm!
+                      </p>
+                    ) : (
+                      <div className="space-y-4 text-xs">
+                        <p className="text-[10px] text-neutral-300 leading-normal font-medium">
+                          Overlay a flexible curve line on any drawing region. Position it over a tail or limb, click <strong className="text-emerald-400">Done</strong> to link it, then bend the line handles to flex that part flawlessly without stretching!
+                        </p>
+
+                        {/* Attach / Detach Action Button */}
+                        <div className="pt-1">
+                          {!selectedObject.flexCurveState?.isAttached ? (
+                            <button
+                              type="button"
+                              id="rightpanel-crv-attach-btn"
+                              onClick={() => {
+                                if (!selectedObject) return;
+                                const fcs = selectedObject.flexCurveState;
+                                if (!fcs || !fcs.points) return;
+                                const attachedPts = fcs.points.map(pt => ({
+                                  ...pt,
+                                  origX: pt.x,
+                                  origY: pt.y
+                                }));
+                                updateObject(selectedObject.id, {
+                                  flexCurveState: {
+                                    ...fcs,
+                                    isAttached: true,
+                                    points: attachedPts
+                                  }
+                                });
+                              }}
+                              className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-emerald-500/20 cursor-pointer flex items-center justify-center gap-2"
+                            >
+                              <Sparkles className="w-4 h-4" />
+                              Done / Attach Curve to Drawing
+                            </button>
+                          ) : (
+                            <div className="space-y-2">
+                              <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-[10.5px] font-bold text-emerald-300 flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                                Curve Line Attached & Linked to Drawing!
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  id="rightpanel-crv-detach-btn"
+                                  onClick={() => {
+                                    if (!selectedObject) return;
+                                    const fcs = selectedObject.flexCurveState;
+                                    if (!fcs) return;
+                                    updateObject(selectedObject.id, {
+                                      flexCurveState: {
+                                        ...fcs,
+                                        isAttached: false
+                                      }
+                                    });
+                                  }}
+                                  className="py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                >
+                                  🔓 Detach Line
+                                </button>
+
+                                <button
+                                  type="button"
+                                  id="rightpanel-crv-reset-btn"
+                                  onClick={() => {
+                                    if (!selectedObject) return;
+                                    const fcs = selectedObject.flexCurveState;
+                                    if (!fcs || !fcs.points) return;
+                                    const resetPts = fcs.points.map(pt => ({
+                                      ...pt,
+                                      x: pt.origX,
+                                      y: pt.origY
+                                    }));
+                                    updateObject(selectedObject.id, {
+                                      flexCurveState: {
+                                        ...fcs,
+                                        points: resetPts
+                                      }
+                                    });
+                                  }}
+                                  className="py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer border border-amber-500/30"
+                                >
+                                  🔄 Reset Bend
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Influence Radius Slider */}
+                        <div className="space-y-1 border-t border-neutral-800/60 pt-3">
+                          <div className="flex items-center justify-between text-[10px] text-neutral-400">
+                            <span className="font-bold uppercase tracking-wider">Bend Influence Radius</span>
+                            <span className="text-emerald-400 font-bold font-mono">
+                              {selectedObject.flexCurveState?.influenceRadius || 120}px
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="30"
+                            max="350"
+                            value={selectedObject.flexCurveState?.influenceRadius || 120}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value);
+                              const fcs = selectedObject.flexCurveState;
+                              if (fcs) {
+                                updateObject(selectedObject.id, {
+                                  flexCurveState: {
+                                    ...fcs,
+                                    influenceRadius: val
+                                  }
+                                });
+                              }
+                            }}
+                            className="w-full accent-emerald-500 bg-neutral-900 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <p className="text-[8.5px] text-neutral-500 italic">
+                            Controls how far around the curve line drawing vertices bend (smaller for tail/fingers, larger for entire limb/body).
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={() => setActiveTool('SEL')}
+                          className="w-full py-2 bg-emerald-500 text-neutral-950 hover:bg-emerald-400 text-[10px] font-black rounded-xl transition-all uppercase tracking-wider text-center block mt-3"
+                        >
+                          ✓ Complete & Return to Select
+                        </button>
                       </div>
                     )}
                   </div>

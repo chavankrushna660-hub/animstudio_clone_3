@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { RotateCcw, Sparkles, Feather, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
-import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings, CurvePathState } from '../types';
+import { RotateCcw, Sparkles, Feather, ZoomIn, ZoomOut, Maximize2, Activity } from 'lucide-react';
+import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings, CurvePathState, FlexCurveState, FlexCurveControlPoint } from '../types';
 import { transform3DVertex, project3DVertex, getFaceLightColor, deformVertices3D } from '../utils/engine3D';
 import { Renderer3D } from '../utils/extruded3D';
 import { 
@@ -12,7 +12,9 @@ import {
   deformPoints, 
   calculateBoundingBox,
   rotatePoint,
-  findClosestView360
+  findClosestView360,
+  unifyStrokesToSinglePath,
+  finalizeContinuousObject
 } from '../utils/math';
 import { getInterpolatedObjects } from '../utils/interpolation';
 
@@ -616,6 +618,121 @@ const deformWithCurvePath = (p: Point, cps: CurvePathState): Point => {
   };
 };
 
+const distanceToSegment = (p: Point, a: Point, b: Point): number => {
+  const l2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y);
+  if (l2 === 0) return distance(p, a);
+  let t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return distance(p, { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) });
+};
+
+const initializeFlexCurveState = (obj: VectorObject, nodeCount = 4): FlexCurveState => {
+  const bounds = getFullObjectBounds(obj);
+  const width = Math.max(bounds.width, 60);
+  const height = Math.max(bounds.height, 60);
+  
+  const startX = bounds.x + width * 0.1;
+  const endX = bounds.x + width * 0.9;
+  const startY = bounds.y + height * 0.3;
+  const endY = bounds.y + height * 0.3;
+  
+  const points: FlexCurveControlPoint[] = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const t = nodeCount > 1 ? i / (nodeCount - 1) : 0.5;
+    const px = startX + t * (endX - startX);
+    const arch = Math.sin(t * Math.PI) * (-height * 0.1);
+    const py = startY + t * (endY - startY) + arch;
+    
+    points.push({
+      id: `fcp_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 4)}`,
+      x: Number(px.toFixed(2)),
+      y: Number(py.toFixed(2)),
+      origX: Number(px.toFixed(2)),
+      origY: Number(py.toFixed(2))
+    });
+  }
+
+  return {
+    active: true,
+    isAttached: false,
+    points,
+    influenceRadius: Math.max(80, Math.max(width, height) * 0.4),
+    preserveLength: true
+  };
+};
+
+const deformWithFlexCurve = (p: Point, fcs: FlexCurveState): Point => {
+  if (!fcs || !fcs.active || !fcs.isAttached || !fcs.points || fcs.points.length < 2) {
+    return p;
+  }
+
+  const pts = fcs.points;
+  const numPts = pts.length;
+  const radius = fcs.influenceRadius || 120;
+  
+  let totalWeight = 0;
+  let accumDx = 0;
+  let accumDy = 0;
+
+  for (let i = 0; i < numPts - 1; i++) {
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+
+    const origVx = p2.origX - p1.origX;
+    const origVy = p2.origY - p1.origY;
+    const origLen = Math.hypot(origVx, origVy);
+    if (origLen < 0.001) continue;
+
+    const currVx = p2.x - p1.x;
+    const currVy = p2.y - p1.y;
+    const currLen = Math.hypot(currVx, currVy);
+    if (currLen < 0.001) continue;
+
+    const tx0 = origVx / origLen;
+    const ty0 = origVy / origLen;
+    const nx0 = -ty0;
+    const ny0 = tx0;
+
+    const dx0 = p.x - p1.origX;
+    const dy0 = p.y - p1.origY;
+
+    const u = dx0 * tx0 + dy0 * ty0;
+    const v = dx0 * nx0 + dy0 * ny0;
+
+    const uClamped = Math.max(0, Math.min(origLen, u));
+    const closestX = p1.origX + uClamped * tx0;
+    const closestY = p1.origY + uClamped * ty0;
+    const dist = Math.hypot(p.x - closestX, p.y - closestY);
+
+    if (dist > radius) continue;
+
+    const normDist = dist / radius;
+    const w = (1 - normDist) * (1 - normDist);
+
+    const tx = currVx / currLen;
+    const ty = currVy / currLen;
+    const nx = -ty;
+    const ny = tx;
+
+    const effU = fcs.preserveLength !== false ? u : u * (currLen / origLen);
+    const deformedX = p1.x + effU * tx + v * nx;
+    const deformedY = p1.y + effU * ty + v * ny;
+
+    accumDx += w * (deformedX - p.x);
+    accumDy += w * (deformedY - p.y);
+    totalWeight += w;
+  }
+
+  if (totalWeight < 0.0001) {
+    return p;
+  }
+
+  return {
+    x: p.x + accumDx / totalWeight,
+    y: p.y + accumDy / totalWeight
+  };
+};
+
 const deformLocalPoint = (p: Point, drawObj: VectorObject, idx?: number, subPathIdx?: number): Point => {
   let curr = { ...p };
   try {
@@ -654,6 +771,9 @@ const deformLocalPoint = (p: Point, drawObj: VectorObject, idx?: number, subPath
     }
     if (drawObj.curvePathState && drawObj.curvePathState.active) {
       curr = deformWithCurvePath(curr, drawObj.curvePathState);
+    }
+    if (drawObj.flexCurveState && drawObj.flexCurveState.active) {
+      curr = deformWithFlexCurve(curr, drawObj.flexCurveState);
     }
   } catch (err) {
     console.error("deformLocalPoint error, falling back to current point:", err);
@@ -736,6 +856,9 @@ const deformImagePoint = (p: Point, drawObj: VectorObject, imgBounds: any): Poin
     }
     if (drawObj.curvePathState && drawObj.curvePathState.active) {
       curr = deformWithCurvePath(curr, drawObj.curvePathState);
+    }
+    if (drawObj.flexCurveState && drawObj.flexCurveState.active) {
+      curr = deformWithFlexCurve(curr, drawObj.flexCurveState);
     }
   } catch (err) {
     console.error("deformImagePoint error:", err);
@@ -1216,6 +1339,8 @@ export default function CanvasArea({
       });
     }
   }, [registerInverseDeformer]);
+
+  const effectiveSelectedObjectId = isRecording ? null : selectedObjectId;
 
   const activeObjects: { [id: string]: VectorObject } = React.useMemo(() => {
     if (autoTween) {
@@ -2827,6 +2952,82 @@ export default function CanvasArea({
       return;
     }
 
+    // CRV (Curve Line Deformer) tool pointer down logic
+    if (activeTool === 'CRV') {
+      let activeId = selectedObjectId;
+      if (!activeId) {
+        const clickedObj = performHitTest(coords);
+        if (clickedObj) {
+          setSelectedObjectId(clickedObj.id);
+          activeId = clickedObj.id;
+        }
+      }
+
+      if (activeId && objects[activeId]) {
+        let obj = objects[activeId];
+        
+        // Auto-initialize Flex Curve state if not present or inactive
+        if (!obj.flexCurveState || !obj.flexCurveState.active) {
+          const initFcs = initializeFlexCurveState(obj);
+          setObjects(prev => ({
+            ...prev,
+            [activeId!]: {
+              ...prev[activeId!],
+              flexCurveState: initFcs
+            }
+          }));
+          obj = { ...obj, flexCurveState: initFcs };
+        }
+
+        if (obj.flexCurveState && obj.flexCurveState.points) {
+          const fcs = obj.flexCurveState;
+          const pts = fcs.points || [];
+          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+          
+          let clickedIdx = -1;
+          let minDist = 30 / zoomScale; // clickable handle radius
+
+          // 1. Check control point handle hits
+          pts.forEach((pt, idx) => {
+            const worldPt = localToWorld({ x: pt.x, y: pt.y }, obj.transform, localPivot);
+            const d = distance(coords, worldPt);
+            if (d < minDist) {
+              minDist = d;
+              clickedIdx = idx;
+            }
+          });
+
+          if (clickedIdx !== -1) {
+            setDragMode('flexCurveHandle' as any);
+            setDraggedMeshPointIndex(clickedIdx);
+            setDragStartPoint(coords);
+            historyPush();
+            return;
+          }
+
+          // 2. Check if clicked near curve line body to drag entire line
+          const localPos = worldToLocal(coords, obj.transform, localPivot);
+          let closeToLine = false;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const distSeg = distanceToSegment(localPos, { x: pts[i].x, y: pts[i].y }, { x: pts[i+1].x, y: pts[i+1].y });
+            if (distSeg < (35 / zoomScale)) {
+              closeToLine = true;
+              break;
+            }
+          }
+
+          if (closeToLine) {
+            setDragMode('flexCurveBody' as any);
+            setDragStartPoint(coords);
+            (window as any)._initialFlexCurvePts = JSON.parse(JSON.stringify(pts));
+            historyPush();
+            return;
+          }
+        }
+      }
+      return;
+    }
+
     // LQB (Liquify Brush) tool pointer down logic
     if (activeTool === 'LQB') {
       let activeId = selectedObjectId;
@@ -3452,6 +3653,83 @@ export default function CanvasArea({
               }
             };
           }
+        });
+      }
+      return;
+    }
+
+    if ((dragMode === 'flexCurveHandle' || dragMode === 'flexCurveBody') && selectedObjectId) {
+      const obj = objects[selectedObjectId];
+      if (obj && obj.flexCurveState) {
+        const localPos = worldToLocal(coords, obj.transform, obj.pivots[0]);
+        setObjects(prev => {
+          if (!prev[selectedObjectId]) return prev;
+          const fcs = prev[selectedObjectId].flexCurveState;
+          if (!fcs || !fcs.points) return prev;
+
+          if (dragMode === 'flexCurveHandle' && draggedMeshPointIndex !== null) {
+            const newPts = [...fcs.points];
+            if (newPts[draggedMeshPointIndex]) {
+              const nx = Number(localPos.x.toFixed(2));
+              const ny = Number(localPos.y.toFixed(2));
+              if (!fcs.isAttached) {
+                // Placement mode: update both current and resting position
+                newPts[draggedMeshPointIndex] = {
+                  ...newPts[draggedMeshPointIndex],
+                  x: nx,
+                  y: ny,
+                  origX: nx,
+                  origY: ny
+                };
+              } else {
+                // Attached mode: update current position only
+                newPts[draggedMeshPointIndex] = {
+                  ...newPts[draggedMeshPointIndex],
+                  x: nx,
+                  y: ny
+                };
+              }
+            }
+            return {
+              ...prev,
+              [selectedObjectId]: {
+                ...prev[selectedObjectId],
+                flexCurveState: {
+                  ...fcs,
+                  points: newPts
+                }
+              }
+            };
+          } else if (dragMode === 'flexCurveBody') {
+            const initialPts = (window as any)._initialFlexCurvePts || fcs.points;
+            const startLocal = worldToLocal(dragStartPoint, obj.transform, obj.pivots[0]);
+            const dx = localPos.x - startLocal.x;
+            const dy = localPos.y - startLocal.y;
+
+            const newPts = initialPts.map((pt: FlexCurveControlPoint) => {
+              const nx = Number((pt.x + dx).toFixed(2));
+              const ny = Number((pt.y + dy).toFixed(2));
+              if (!fcs.isAttached) {
+                const norigX = Number((pt.origX + dx).toFixed(2));
+                const norigY = Number((pt.origY + dy).toFixed(2));
+                return { ...pt, x: nx, y: ny, origX: norigX, origY: norigY };
+              } else {
+                return { ...pt, x: nx, y: ny };
+              }
+            });
+
+            return {
+              ...prev,
+              [selectedObjectId]: {
+                ...prev[selectedObjectId],
+                flexCurveState: {
+                  ...fcs,
+                  points: newPts
+                }
+              }
+            };
+          }
+          return prev;
         });
       }
       return;
@@ -4132,15 +4410,18 @@ export default function CanvasArea({
       if (continuousDrawActive) {
         if (activeContinuousDrawingId && objects[activeContinuousDrawingId]) {
           const existingObj = objects[activeContinuousDrawingId];
-          const markedPts = pts.map((p, idx) => idx === 0 ? { ...p, gap: true } : p);
-          const updatedPoints = [...(existingObj.points || []), ...markedPts];
-          const updatedSubPaths = [...(existingObj.subPaths || []), pts];
+          const currentSubPaths = (existingObj.subPaths && existingObj.subPaths.length > 0)
+            ? existingObj.subPaths
+            : [existingObj.points];
+          const updatedSubPaths = [...currentSubPaths, pts];
+          const unifiedPoints = unifyStrokesToSinglePath(updatedSubPaths);
+
           const updatedObj: VectorObject = {
             ...existingObj,
-            points: updatedPoints,
+            points: unifiedPoints,
             isContinuousDrawing: true,
             subPaths: updatedSubPaths,
-            joinedStrokesDemo: [...updatedPoints],
+            joinedStrokesDemo: [...unifiedPoints],
           };
           setObjects(prev => ({ ...prev, [activeContinuousDrawingId]: updatedObj }));
           setSelectedObjectId(activeContinuousDrawingId);
@@ -4148,14 +4429,15 @@ export default function CanvasArea({
         } else {
           const newId = `obj_${Date.now()}`;
           const name = `Stroke_${Object.keys(objects).length + 1}`;
+          const unifiedPoints = unifyStrokesToSinglePath([pts]);
           
           const newObj: VectorObject = {
             id: newId,
             name,
             type: 'stroke',
-            points: pts,
-            subPaths: [],
-            joinedStrokesDemo: [...pts],
+            points: unifiedPoints,
+            subPaths: [pts],
+            joinedStrokesDemo: [...unifiedPoints],
             strokeColor: brushSettings?.strokeColor ?? '#000000',
             strokeWidth: brushSettings?.strokeWidth ?? 3.5,
             fillColor: 'transparent',
@@ -4691,8 +4973,6 @@ export default function CanvasArea({
     if (!frontCanvas) return;
     const ctx = frontCanvas.getContext('2d');
     if (!ctx) return;
-
-    const effectiveSelectedObjectId = isRecording ? null : selectedObjectId;
 
     // Clear and Redraw physical viewport with slate workspace background (pasteboard)
     ctx.fillStyle = '#17171a';
@@ -5315,6 +5595,15 @@ export default function CanvasArea({
         Renderer3D.render(drawObj, ctx);
       } else {
         // Render vector drawing
+        // 1. Always fill underlying interior path if fillColor is specified (for shapes, strokes & continuous drawings)
+        if (drawObj.fillColor && drawObj.fillColor !== 'transparent') {
+          ctx.save();
+          drawAllPaths();
+          ctx.fillStyle = drawObj.fillColor;
+          ctx.fill();
+          ctx.restore();
+        }
+
         if (drawObj.type === 'stroke') {
           // Map local points to world points, preserving our realism attributes!
           const worldStrokePoints = localPoints.map((p) => {
@@ -5372,11 +5661,6 @@ export default function CanvasArea({
           ctx.lineWidth = drawObj.strokeWidth;
           ctx.strokeStyle = drawObj.strokeColor;
           ctx.stroke();
-
-          if (drawObj.fillColor && drawObj.fillColor !== 'transparent') {
-            ctx.fillStyle = drawObj.fillColor;
-            ctx.fill();
-          }
         }
       }
 
@@ -5508,10 +5792,9 @@ export default function CanvasArea({
           }
         });
 
-        // 2. Draw each point that has a color (soft radial glow bleed, scaling with drawing transform scale factor)
-        const scaleX = Math.abs(obj.transform.scaleX);
-        const scaleY = Math.abs(obj.transform.scaleY);
-        const scaleFactor = (scaleX + scaleY) / 2;
+        // 2. Draw each point that has a color (soft radial glow bleed, non-isotropically stretching and turning with object transform)
+        const scaleX = Math.abs(obj.transform.scaleX || 1);
+        const scaleY = Math.abs(obj.transform.scaleY || 1);
 
         smc.points.forEach(pt => {
           if (!pt.color) return;
@@ -5520,17 +5803,20 @@ export default function CanvasArea({
           const finalLocal = deformLocalPoint({ x: pt.originalX, y: pt.originalY }, obj);
           const worldPt = localToWorld(finalLocal, obj.transform, localPivot);
           const baseBrushSize = smc.brushSize || 40;
-          const brushSize = baseBrushSize * scaleFactor;
 
           ctx.save();
           ctx.globalAlpha = pt.opacity !== undefined ? pt.opacity : 1.0;
-          const grad = ctx.createRadialGradient(worldPt.x, worldPt.y, 0, worldPt.x, worldPt.y, brushSize);
+          ctx.translate(worldPt.x, worldPt.y);
+          ctx.rotate((obj.transform.rotation * Math.PI) / 180);
+          ctx.scale(scaleX, scaleY);
+
+          const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, baseBrushSize);
           grad.addColorStop(0, pt.color);
           grad.addColorStop(1, getTransparentColor(pt.color));
           
           ctx.fillStyle = grad;
           ctx.beginPath();
-          ctx.arc(worldPt.x, worldPt.y, brushSize, 0, Math.PI * 2);
+          ctx.arc(0, 0, baseBrushSize, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         });
@@ -5572,6 +5858,46 @@ export default function CanvasArea({
       ctx.lineTo(bl.x, bl.y);
       ctx.closePath();
       ctx.stroke();
+
+      // 1.5. Draw Vertical (Top-to-Bottom) and Horizontal (Left-to-Right) Axis Guide Lines on Drawing
+      const vTop = localToWorld({ x: box.x + box.width / 2, y: box.y }, obj.transform, pivot);
+      const vBottom = localToWorld({ x: box.x + box.width / 2, y: box.y + box.height }, obj.transform, pivot);
+      const hLeft = localToWorld({ x: box.x, y: box.y + box.height / 2 }, obj.transform, pivot);
+      const hRight = localToWorld({ x: box.x + box.width, y: box.y + box.height / 2 }, obj.transform, pivot);
+      const centerPt = localToWorld({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, obj.transform, pivot);
+
+      ctx.save();
+      // Subtle dark outline for high contrast against any background color
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(vTop.x, vTop.y);
+      ctx.lineTo(vBottom.x, vBottom.y);
+      ctx.moveTo(hLeft.x, hLeft.y);
+      ctx.lineTo(hRight.x, hRight.y);
+      ctx.stroke();
+
+      // Main crisp dashed guide lines (emerald cyan)
+      ctx.strokeStyle = '#10B981';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(vTop.x, vTop.y);
+      ctx.lineTo(vBottom.x, vBottom.y);
+      ctx.moveTo(hLeft.x, hLeft.y);
+      ctx.lineTo(hRight.x, hRight.y);
+      ctx.stroke();
+
+      // Center crosshair marker
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#10B981';
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(centerPt.x, centerPt.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
 
       // 2. Draw line connecting to Top Rotation Handle
       ctx.beginPath();
@@ -5929,6 +6255,89 @@ export default function CanvasArea({
           ctx.lineWidth = 1.5 / zoomScale;
           ctx.fill();
           ctx.stroke();
+        });
+
+        ctx.restore();
+      }
+    }
+
+    // CRV (Curve Line Deformer) overlay rendering
+    if ((activeTool === 'CRV' || (effectiveSelectedObjectId && objects[effectiveSelectedObjectId]?.flexCurveState?.active)) && effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
+      const obj = objects[effectiveSelectedObjectId];
+      if (obj.flexCurveState && obj.flexCurveState.active && obj.flexCurveState.points) {
+        const fcs = obj.flexCurveState;
+        const pts = fcs.points || [];
+        const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+        
+        ctx.save();
+        
+        // Convert local control points to world space
+        const worldPts = pts.map(pt => localToWorld({ x: pt.x, y: pt.y }, obj.transform, localPivot));
+        const isAttached = fcs.isAttached;
+
+        // Draw influence radius circles
+        if (worldPts.length > 0) {
+          worldPts.forEach(pt => {
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, (fcs.influenceRadius || 120) * obj.transform.scaleX, 0, Math.PI * 2);
+            ctx.strokeStyle = isAttached ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.15)';
+            ctx.lineWidth = 1 / zoomScale;
+            ctx.setLineDash([4 / zoomScale, 4 / zoomScale]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          });
+        }
+
+        // Draw curve line stroke
+        if (worldPts.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(worldPts[0].x, worldPts[0].y);
+          if (worldPts.length === 2) {
+            ctx.lineTo(worldPts[1].x, worldPts[1].y);
+          } else {
+            for (let i = 0; i < worldPts.length - 1; i++) {
+              const curr = worldPts[i];
+              const next = worldPts[i + 1];
+              const midX = (curr.x + next.x) / 2;
+              const midY = (curr.y + next.y) / 2;
+              if (i === 0) {
+                ctx.lineTo(midX, midY);
+              } else {
+                ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+              }
+            }
+            ctx.lineTo(worldPts[worldPts.length - 1].x, worldPts[worldPts.length - 1].y);
+          }
+          
+          ctx.strokeStyle = isAttached ? '#10B981' : '#F59E0B';
+          ctx.lineWidth = 3.5 / zoomScale;
+          if (!isAttached) {
+            ctx.setLineDash([6 / zoomScale, 4 / zoomScale]);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Draw control node handles
+        worldPts.forEach((pt, idx) => {
+          ctx.beginPath();
+          const isDragging = (dragMode === 'flexCurveHandle' && draggedMeshPointIndex === idx);
+          const r = isDragging ? 9 : 6;
+          ctx.arc(pt.x, pt.y, r / zoomScale, 0, Math.PI * 2);
+          ctx.fillStyle = isDragging 
+            ? (isAttached ? '#34D399' : '#FBBF24') 
+            : (isAttached ? '#10B981' : '#F59E0B');
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 2 / zoomScale;
+          ctx.fill();
+          ctx.stroke();
+
+          // Node number text
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = `bold ${Math.max(9, Math.min(12, 10 / zoomScale))}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText((idx + 1).toString(), pt.x, pt.y - (14 / zoomScale));
         });
 
         ctx.restore();
@@ -6620,6 +7029,224 @@ export default function CanvasArea({
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {/* Floating Continuous Drawing Mode HUD */}
+      {continuousDrawActive && (
+        <div id="canvas-continuous-draw-hud" className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-neutral-900/95 backdrop-blur-md px-5 py-2.5 rounded-2xl border border-emerald-500/40 shadow-2xl pointer-events-auto z-50 animate-fade-in text-white text-xs">
+          <span className="text-[11px] text-emerald-400 font-black uppercase tracking-wider flex items-center gap-1.5 border-r border-neutral-800 pr-3 font-mono">
+            <Feather className="w-4 h-4 text-emerald-400 animate-pulse" />
+            Continuous Drawing Mode
+          </span>
+
+          {(() => {
+            const activeObj = activeContinuousDrawingId ? objects[activeContinuousDrawingId] : null;
+            const subCount = activeObj ? ((activeObj.subPaths?.length ?? 0) > 0 ? activeObj.subPaths!.length : (activeObj.points ? 1 : 0)) : 0;
+            return (
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] text-neutral-300 font-medium">
+                  {activeObj ? (
+                    <>
+                      Drawing: <strong className="text-white">{activeObj.name}</strong> ({subCount} stroke{subCount !== 1 ? 's' : ''})
+                    </>
+                  ) : (
+                    'Ready — Draw strokes on canvas to build single drawing'
+                  )}
+                </span>
+
+                <button
+                  type="button"
+                  id="canvas-continuous-done-btn"
+                  disabled={!activeObj}
+                  onClick={() => {
+                    if (activeContinuousDrawingId && objects[activeContinuousDrawingId]) {
+                      const curObj = objects[activeContinuousDrawingId];
+                      const finalized = finalizeContinuousObject(curObj);
+                      setObjects(prev => ({
+                        ...prev,
+                        [activeContinuousDrawingId!]: finalized
+                      }));
+                      historyPush();
+                    }
+                    if (setActiveContinuousDrawingId) {
+                      setActiveContinuousDrawingId(null);
+                    }
+                  }}
+                  className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:hover:bg-emerald-500 text-neutral-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-emerald-500/20 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Done / Merge into Single Drawing
+                </button>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Floating Curve Line Deformer HUD */}
+      {(activeTool === 'CRV' || (effectiveSelectedObjectId && objects[effectiveSelectedObjectId]?.flexCurveState?.active)) && (
+        <div id="canvas-crv-mode-hud" className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-neutral-900/95 backdrop-blur-md px-5 py-2.5 rounded-2xl border border-amber-500/30 shadow-2xl pointer-events-auto z-50 animate-fade-in text-white text-xs">
+          <span className="text-[11px] text-amber-400 font-black uppercase tracking-wider flex items-center gap-1.5 border-r border-neutral-800 pr-3 font-mono">
+            <Activity className="w-4 h-4 text-amber-400 animate-pulse" />
+            Flexible Curve Line
+          </span>
+
+          {(() => {
+            const activeObj = effectiveSelectedObjectId ? objects[effectiveSelectedObjectId] : null;
+            if (!activeObj) {
+              return (
+                <span className="text-[11px] text-neutral-400 font-bold">
+                  Select or click a drawing to spawn the curve line overlay!
+                </span>
+              );
+            }
+            const fcs = activeObj.flexCurveState;
+            if (!fcs) return null;
+
+            return (
+              <div className="flex items-center gap-2">
+                {!fcs.isAttached ? (
+                  <>
+                    <span className="text-[10px] text-neutral-300 font-medium hidden sm:inline">
+                      Place line over dog tail/limb, then click:
+                    </span>
+                    <button
+                      type="button"
+                      id="canvas-crv-attach-btn"
+                      onClick={() => {
+                        setObjects(prev => {
+                          if (!effectiveSelectedObjectId || !prev[effectiveSelectedObjectId]) return prev;
+                          const currFcs = prev[effectiveSelectedObjectId].flexCurveState;
+                          if (!currFcs) return prev;
+                          const attachedPts = currFcs.points.map(pt => ({
+                            ...pt,
+                            origX: pt.x,
+                            origY: pt.y
+                          }));
+                          return {
+                            ...prev,
+                            [effectiveSelectedObjectId]: {
+                              ...prev[effectiveSelectedObjectId],
+                              flexCurveState: {
+                                ...currFcs,
+                                isAttached: true,
+                                points: attachedPts
+                              }
+                            }
+                          };
+                        });
+                      }}
+                      className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-emerald-500/20 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Done / Attach Curve
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1 bg-emerald-500/10 px-2 py-1 rounded-lg border border-emerald-500/20">
+                      🟢 Attached & Ready to Blend!
+                    </span>
+                    <button
+                      type="button"
+                      id="canvas-crv-detach-btn"
+                      onClick={() => {
+                        setObjects(prev => {
+                          if (!effectiveSelectedObjectId || !prev[effectiveSelectedObjectId]) return prev;
+                          const currFcs = prev[effectiveSelectedObjectId].flexCurveState;
+                          if (!currFcs) return prev;
+                          return {
+                            ...prev,
+                            [effectiveSelectedObjectId]: {
+                              ...prev[effectiveSelectedObjectId],
+                              flexCurveState: {
+                                ...currFcs,
+                                isAttached: false
+                              }
+                            }
+                          };
+                        });
+                      }}
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                      title="Detach curve line to re-position it over another part of the drawing"
+                    >
+                      🔓 Detach / Move Line
+                    </button>
+
+                    <button
+                      type="button"
+                      id="canvas-crv-reset-btn"
+                      onClick={() => {
+                        setObjects(prev => {
+                          if (!effectiveSelectedObjectId || !prev[effectiveSelectedObjectId]) return prev;
+                          const currFcs = prev[effectiveSelectedObjectId].flexCurveState;
+                          if (!currFcs) return prev;
+                          const resetPts = currFcs.points.map(pt => ({
+                            ...pt,
+                            x: pt.origX,
+                            y: pt.origY
+                          }));
+                          return {
+                            ...prev,
+                            [effectiveSelectedObjectId]: {
+                              ...prev[effectiveSelectedObjectId],
+                              flexCurveState: {
+                                ...currFcs,
+                                points: resetPts
+                              }
+                            }
+                          };
+                        });
+                      }}
+                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer border border-amber-500/30"
+                    >
+                      🔄 Reset Bend
+                    </button>
+                  </>
+                )}
+
+                <div className="h-4 w-[1px] bg-neutral-800 mx-1" />
+
+                <button
+                  type="button"
+                  title="Add control node"
+                  onClick={() => {
+                    setObjects(prev => {
+                      if (!effectiveSelectedObjectId || !prev[effectiveSelectedObjectId]) return prev;
+                      const currFcs = prev[effectiveSelectedObjectId].flexCurveState;
+                      if (!currFcs || !currFcs.points || currFcs.points.length < 2) return prev;
+                      const oldPts = currFcs.points;
+                      const last = oldPts[oldPts.length - 1];
+                      const secondLast = oldPts[oldPts.length - 2];
+                      const nx = last.x + (last.x - secondLast.x) * 0.5;
+                      const ny = last.y + (last.y - secondLast.y) * 0.5;
+                      const newPt: FlexCurveControlPoint = {
+                        id: `fcp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+                        x: Number(nx.toFixed(2)),
+                        y: Number(ny.toFixed(2)),
+                        origX: Number(nx.toFixed(2)),
+                        origY: Number(ny.toFixed(2))
+                      };
+                      return {
+                        ...prev,
+                        [effectiveSelectedObjectId]: {
+                          ...prev[effectiveSelectedObjectId],
+                          flexCurveState: {
+                            ...currFcs,
+                            points: [...oldPts, newPt]
+                          }
+                        }
+                      };
+                    });
+                  }}
+                  className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-lg text-xs"
+                >
+                  + Node
+                </button>
+              </div>
+            );
+          })()}
         </div>
       )}
 

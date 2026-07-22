@@ -22,7 +22,8 @@ import {
   Box,
   ZoomIn,
   Share2,
-  Sliders
+  Sliders,
+  Activity
 } from 'lucide-react';
 
 interface ToolbarProps {
@@ -60,6 +61,7 @@ export default function Toolbar({
     { id: 'CON', name: 'Constraint', label: 'Constraints (CON)', icon: AlignCenterIcon },
     { id: 'MOT', name: 'Motion Path', label: 'Motion Path (MOT)', icon: TrendingUpIcon },
     { id: 'CPT', name: 'Curve Path', label: 'Curve Path Tool (CPT)', icon: GitForkIcon, desc: 'Warp and blend drawing along interactive horizontal and vertical spine lines' },
+    { id: 'CRV', name: 'Curve Line Deformer', label: 'Curve Line Deformer (CRV)', icon: ActivityIcon, desc: 'Flexible curve line overlay to bend and attach to specific drawing parts like tail, arm, leg seamlessly' },
     { id: 'EYE', name: 'Eyedropper', label: 'Eyedropper (EYE)', icon: EyedropperIcon },
     { id: 'ZOM', name: 'Zoom & Pan', label: 'Zoom & Pan (ZOM)', icon: ZoomInIcon, desc: 'Pinch with two fingers to zoom, or drag with single touch/pointer to pan smoothly in any direction.' },
   ];
@@ -147,6 +149,7 @@ function EraserIcon(props: any) { return <Trash2 {...props} /> }
 function SparklesIcon(props: any) { return <Sparkles {...props} /> }
 function BoxIcon(props: any) { return <Box {...props} /> }
 function CompassIcon(props: any) { return <Compass {...props} /> }
+function ActivityIcon(props: any) { return <Activity {...props} /> }
 function ZoomInIcon(props: any) { return <ZoomIn {...props} /> }
 function Share2Icon(props: any) { return <Share2 {...props} /> }
 function SlidersIcon(props: any) { return <Sliders {...props} /> }

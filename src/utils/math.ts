@@ -82,6 +82,146 @@ export function calculateCenter(points: Point[]): Point {
   };
 }
 
+/**
+ * Unifies multiple separate strokes (sub-paths) into a single continuous array of points.
+ * Automatically aligns endpoint directions, chains nearest stroke segments,
+ * and closes the shape loop if start and end points are near each other.
+ */
+export function unifyStrokesToSinglePath(strokes: Point[][]): Point[] {
+  if (!strokes || strokes.length === 0) return [];
+  
+  // Filter out empty strokes
+  const validStrokes = strokes.filter(s => s && s.length > 0).map(s => s.map(p => ({ ...p })));
+  if (validStrokes.length === 0) return [];
+  if (validStrokes.length === 1) {
+    const single = validStrokes[0];
+    if (single.length > 3) {
+      const head = single[0];
+      const tail = single[single.length - 1];
+      if (distance(head, tail) < 25 && distance(head, tail) > 0) {
+        return [...single, { ...head }];
+      }
+    }
+    return single.map(p => {
+      const { gap, ...clean } = p;
+      return clean;
+    });
+  }
+
+  // Chain strokes using greedy nearest-endpoint search
+  let currentChain: Point[] = [...validStrokes[0]];
+  const remaining = validStrokes.slice(1);
+
+  while (remaining.length > 0) {
+    const headP = currentChain[0];
+    const tailP = currentChain[currentChain.length - 1];
+
+    let bestIndex = -1;
+    let bestOption: 'append_as_is' | 'append_reversed' | 'prepend_as_is' | 'prepend_reversed' = 'append_as_is';
+    let minDistance = Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const s = remaining[i];
+      const sHead = s[0];
+      const sTail = s[s.length - 1];
+
+      // Option 1: Append as-is to tail
+      const d1 = distance(tailP, sHead);
+      if (d1 < minDistance) {
+        minDistance = d1;
+        bestIndex = i;
+        bestOption = 'append_as_is';
+      }
+
+      // Option 2: Append reversed to tail
+      const d2 = distance(tailP, sTail);
+      if (d2 < minDistance) {
+        minDistance = d2;
+        bestIndex = i;
+        bestOption = 'append_reversed';
+      }
+
+      // Option 3: Prepend reversed to head
+      const d3 = distance(headP, sHead);
+      if (d3 < minDistance) {
+        minDistance = d3;
+        bestIndex = i;
+        bestOption = 'prepend_reversed';
+      }
+
+      // Option 4: Prepend as-is to head
+      const d4 = distance(headP, sTail);
+      if (d4 < minDistance) {
+        minDistance = d4;
+        bestIndex = i;
+        bestOption = 'prepend_as_is';
+      }
+    }
+
+    if (bestIndex !== -1) {
+      const bestStroke = remaining[bestIndex];
+      remaining.splice(bestIndex, 1);
+
+      if (bestOption === 'append_as_is') {
+        const attachPt = bestStroke[0];
+        const skipFirst = distance(tailP, attachPt) < 15;
+        const ptsToAdd = skipFirst ? bestStroke.slice(1) : bestStroke;
+        currentChain = [...currentChain, ...ptsToAdd];
+      } else if (bestOption === 'append_reversed') {
+        const rev = [...bestStroke].reverse();
+        const attachPt = rev[0];
+        const skipFirst = distance(tailP, attachPt) < 15;
+        const ptsToAdd = skipFirst ? rev.slice(1) : rev;
+        currentChain = [...currentChain, ...ptsToAdd];
+      } else if (bestOption === 'prepend_reversed') {
+        const rev = [...bestStroke].reverse();
+        const attachPt = rev[rev.length - 1];
+        const skipLast = distance(headP, attachPt) < 15;
+        const ptsToAdd = skipLast ? rev.slice(0, -1) : rev;
+        currentChain = [...ptsToAdd, ...currentChain];
+      } else if (bestOption === 'prepend_as_is') {
+        const attachPt = bestStroke[bestStroke.length - 1];
+        const skipLast = distance(headP, attachPt) < 15;
+        const ptsToAdd = skipLast ? bestStroke.slice(0, -1) : bestStroke;
+        currentChain = [...ptsToAdd, ...currentChain];
+      }
+    } else {
+      break;
+    }
+  }
+
+  // Check if closed loop between final tail and head
+  if (currentChain.length > 3) {
+    const finalHead = currentChain[0];
+    const finalTail = currentChain[currentChain.length - 1];
+    if (distance(finalHead, finalTail) < 30 && (finalHead.x !== finalTail.x || finalHead.y !== finalTail.y)) {
+      currentChain.push({ ...finalHead });
+    }
+  }
+
+  // Clean any gap properties so it's a 100% clean contiguous stroke
+  return currentChain.map(p => {
+    const { gap, ...cleanPoint } = p;
+    return cleanPoint;
+  });
+}
+
+export function finalizeContinuousObject(obj: VectorObject): VectorObject {
+  if (!obj) return obj;
+  const allStrokes = obj.subPaths && obj.subPaths.length > 0 
+    ? obj.subPaths 
+    : [obj.points];
+  const unifiedPts = unifyStrokesToSinglePath(allStrokes);
+
+  return {
+    ...obj,
+    points: unifiedPts,
+    subPaths: undefined,
+    joinedStrokesDemo: [...unifiedPts],
+    isContinuousDrawing: true,
+  };
+}
+
 // Rotate point around origin by angle (degrees)
 export function rotatePoint(p: Point, angleDeg: number, origin: Point): Point {
   const angleRad = (angleDeg * Math.PI) / 180;

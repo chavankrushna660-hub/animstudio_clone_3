@@ -280,6 +280,23 @@ export interface VectorObject {
   splineUniformStretch?: boolean;
   splineOriginalPoints?: Point[];
   curvePathState?: CurvePathState;
+  flexCurveState?: FlexCurveState;
+}
+
+export interface FlexCurveControlPoint {
+  id: string;
+  x: number;
+  y: number;
+  origX: number;
+  origY: number;
+}
+
+export interface FlexCurveState {
+  active: boolean;
+  isAttached: boolean;
+  points: FlexCurveControlPoint[];
+  influenceRadius: number;
+  preserveLength: boolean;
 }
 
 export interface CurvePathState {
