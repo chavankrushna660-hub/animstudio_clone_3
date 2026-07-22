@@ -2501,11 +2501,10 @@ export default function CanvasArea({
                 const updated = { ...prev };
                 const color = fillToolColor;
 
-                // Strictly apply fill color ONLY to the selected drawing
+                // Strictly apply fill color ONLY to the selected drawing without overriding stroke color
                 updated[clickedObj.id] = {
                   ...clickedObj,
-                  fillColor: isClosed ? color : clickedObj.fillColor,
-                  strokeColor: !isClosed ? color : clickedObj.strokeColor
+                  fillColor: color
                 };
 
                 return updated;
@@ -5157,7 +5156,7 @@ export default function CanvasArea({
             const isGap = localPoints[i]?.gap;
             if (isHidden) {
               penDown = false;
-            } else if (isGap && !forceClosePaths && !drawObj.fillGaps && !drawObj.autoFillGaps) {
+            } else if (isGap) {
               ctx.moveTo(worldPoints[i].x, worldPoints[i].y);
               penDown = true;
             } else {
@@ -5169,7 +5168,7 @@ export default function CanvasArea({
               }
             }
           }
-          if (forceClosePaths || drawObj.fillGaps || drawObj.autoFillGaps || (drawObj.fillColor && drawObj.fillColor !== 'transparent')) {
+          if (forceClosePaths && (drawObj.fillGaps || drawObj.autoFillGaps)) {
             ctx.closePath();
           }
         }
@@ -5182,8 +5181,12 @@ export default function CanvasArea({
               const hiddenSubIndices = drawObj.hiddenSubPaths?.[subIdx] || [];
               for (let i = 0; i < worldSubPoints.length; i++) {
                 const isHidden = hiddenSubIndices.includes(i);
+                const isGap = localSubPoints[i]?.gap;
                 if (isHidden) {
                   penDown = false;
+                } else if (isGap) {
+                  ctx.moveTo(worldSubPoints[i].x, worldSubPoints[i].y);
+                  penDown = true;
                 } else {
                   if (!penDown) {
                     ctx.moveTo(worldSubPoints[i].x, worldSubPoints[i].y);
@@ -5193,7 +5196,7 @@ export default function CanvasArea({
                   }
                 }
               }
-              if (forceClosePaths || drawObj.fillGaps || drawObj.autoFillGaps || (drawObj.fillColor && drawObj.fillColor !== 'transparent')) {
+              if (forceClosePaths && (drawObj.fillGaps || drawObj.autoFillGaps)) {
                 ctx.closePath();
               }
             }
@@ -5631,16 +5634,26 @@ export default function CanvasArea({
         Renderer3D.render(drawObj, ctx);
       } else {
         // Render vector drawing
-        // 1. Always fill underlying interior path if fillColor is specified (for shapes, strokes & continuous drawings)
+        // 1. Fill interior enclosed area when fillColor is specified
         if (drawObj.fillColor && drawObj.fillColor !== 'transparent') {
           ctx.save();
-          drawAllPaths(true);
+          ctx.beginPath();
+          if (worldPoints.length > 0) {
+            ctx.moveTo(worldPoints[0].x, worldPoints[0].y);
+            for (let i = 1; i < worldPoints.length; i++) {
+              const isHidden = drawObj.hiddenPoints?.includes(i);
+              if (!isHidden) {
+                ctx.lineTo(worldPoints[i].x, worldPoints[i].y);
+              }
+            }
+            ctx.closePath();
+          }
           ctx.fillStyle = drawObj.fillColor;
           ctx.fill();
 
-          // Dilation bleed to eliminate microscopic antialiasing seams & gaps between stroke and fill
-          const expansion = drawObj.gapFillExpansion ?? (drawObj.autoFillGaps || drawObj.fillGaps ? 4 : 2);
-          if (expansion > 0) {
+          // Dilation bleed ONLY when autoFillGaps/fillGaps is explicitly active
+          const expansion = drawObj.gapFillExpansion ?? ((drawObj.autoFillGaps || drawObj.fillGaps) ? 4 : 0);
+          if (expansion > 0 && (drawObj.autoFillGaps || drawObj.fillGaps)) {
             ctx.strokeStyle = drawObj.fillColor;
             ctx.lineWidth = expansion * 2;
             ctx.lineJoin = 'round';
@@ -5651,21 +5664,6 @@ export default function CanvasArea({
         }
 
         if (drawObj.type === 'stroke') {
-          // Map local points to world points, preserving our realism attributes!
-          const worldStrokePoints = localPoints.map((p) => {
-            const wp = localToWorld(p, drawObj.transform, pivot);
-            return {
-              ...wp,
-              w: p.w,
-              t: p.t,
-              angle: p.angle,
-              jitterX: p.jitterX,
-              jitterY: p.jitterY,
-              grainOpacity: p.grainOpacity,
-              gap: p.gap
-            };
-          });
-          
           const strokeBrush: Partial<BrushSettings> = {
             brushType: drawObj.brushType as any ?? 'solid',
             strokeWidth: drawObj.strokeWidth,
@@ -5679,13 +5677,10 @@ export default function CanvasArea({
             shadowOffsetY: drawObj.shadowOffsetY ?? 2,
           };
 
-          drawVariableWidthStroke(ctx, worldStrokePoints, drawObj.strokeColor, realismSettings, strokeBrush);
-          
-          // Draw any subPaths of merged drawings
           if (drawObj.subPaths && drawObj.subPaths.length > 0) {
             drawObj.subPaths.forEach((sub, subIdx) => {
               const localSubPoints = sub.map((p, idx) => deformLocalPoint(p, drawObj, idx, subIdx));
-              const worldSubPoints = localSubPoints.map(p => {
+              const worldSubPoints = localSubPoints.map((p) => {
                 const wp = localToWorld(p, drawObj.transform, pivot);
                 return {
                   ...wp,
@@ -5700,6 +5695,21 @@ export default function CanvasArea({
               });
               drawVariableWidthStroke(ctx, worldSubPoints, drawObj.strokeColor, realismSettings, strokeBrush);
             });
+          } else {
+            const worldStrokePoints = localPoints.map((p) => {
+              const wp = localToWorld(p, drawObj.transform, pivot);
+              return {
+                ...wp,
+                w: p.w,
+                t: p.t,
+                angle: p.angle,
+                jitterX: p.jitterX,
+                jitterY: p.jitterY,
+                grainOpacity: p.grainOpacity,
+                gap: p.gap
+              };
+            });
+            drawVariableWidthStroke(ctx, worldStrokePoints, drawObj.strokeColor, realismSettings, strokeBrush);
           }
         } else {
           drawAllPaths();

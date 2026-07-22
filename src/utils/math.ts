@@ -165,25 +165,31 @@ export function unifyStrokesToSinglePath(strokes: Point[][]): Point[] {
       if (bestOption === 'append_as_is') {
         const attachPt = bestStroke[0];
         const skipFirst = distance(tailP, attachPt) < 15;
-        const ptsToAdd = skipFirst ? bestStroke.slice(1) : bestStroke;
+        const ptsToAdd = skipFirst 
+          ? bestStroke.slice(1) 
+          : bestStroke.map((p, idx) => idx === 0 ? { ...p, gap: true } : p);
         currentChain = [...currentChain, ...ptsToAdd];
       } else if (bestOption === 'append_reversed') {
         const rev = [...bestStroke].reverse();
         const attachPt = rev[0];
         const skipFirst = distance(tailP, attachPt) < 15;
-        const ptsToAdd = skipFirst ? rev.slice(1) : rev;
+        const ptsToAdd = skipFirst 
+          ? rev.slice(1) 
+          : rev.map((p, idx) => idx === 0 ? { ...p, gap: true } : p);
         currentChain = [...currentChain, ...ptsToAdd];
       } else if (bestOption === 'prepend_reversed') {
         const rev = [...bestStroke].reverse();
         const attachPt = rev[rev.length - 1];
         const skipLast = distance(headP, attachPt) < 15;
         const ptsToAdd = skipLast ? rev.slice(0, -1) : rev;
-        currentChain = [...ptsToAdd, ...currentChain];
+        const headMarked = currentChain.map((p, idx) => idx === 0 ? { ...p, gap: true } : p);
+        currentChain = [...ptsToAdd, ...headMarked];
       } else if (bestOption === 'prepend_as_is') {
         const attachPt = bestStroke[bestStroke.length - 1];
         const skipLast = distance(headP, attachPt) < 15;
         const ptsToAdd = skipLast ? bestStroke.slice(0, -1) : bestStroke;
-        currentChain = [...ptsToAdd, ...currentChain];
+        const headMarked = currentChain.map((p, idx) => idx === 0 ? { ...p, gap: true } : p);
+        currentChain = [...ptsToAdd, ...headMarked];
       }
     } else {
       break;
@@ -199,11 +205,7 @@ export function unifyStrokesToSinglePath(strokes: Point[][]): Point[] {
     }
   }
 
-  // Clean any gap properties so it's a 100% clean contiguous stroke
-  return currentChain.map(p => {
-    const { gap, ...cleanPoint } = p;
-    return cleanPoint;
-  });
+  return currentChain;
 }
 
 export function finalizeContinuousObject(obj: VectorObject): VectorObject {
@@ -216,7 +218,7 @@ export function finalizeContinuousObject(obj: VectorObject): VectorObject {
   return {
     ...obj,
     points: unifiedPts,
-    subPaths: undefined,
+    subPaths: obj.subPaths,
     joinedStrokesDemo: [...unifiedPts],
     isContinuousDrawing: true,
   };
