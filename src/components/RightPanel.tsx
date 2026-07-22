@@ -971,8 +971,17 @@ export default function RightPanel({
       const localDeformedPoints = lassoPoints.map(wp => worldToLocal(wp, obj.transform, localPivot));
       const localLassoPoints = inverseDeformPoints ? inverseDeformPoints(localDeformedPoints, obj) : localDeformedPoints;
       
+      const bounds = calculateBoundingBox(obj.points && obj.points.length > 0 ? obj.points : localLassoPoints);
+      const origBounds = {
+        minX: bounds.x,
+        minY: bounds.y,
+        width: Math.max(1, bounds.width),
+        height: Math.max(1, bounds.height)
+      };
+
+      const origPoints = obj.points && obj.points.length > 0 ? obj.points.map(p => ({ x: p.x, y: p.y })) : [];
       const currentFills = obj.lassoFills || [];
-      const updatedFills = [...currentFills, { localLassoPoints, color: lassoColor }];
+      const updatedFills = [...currentFills, { localLassoPoints, color: lassoColor, origBounds, origPoints }];
       
       updateObject(obj.id, { lassoFills: updatedFills });
     });

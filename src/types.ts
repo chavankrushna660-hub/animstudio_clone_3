@@ -200,7 +200,7 @@ export interface VectorObject {
   keepOnlyLassoRegions?: { localLassoPoints: Point[] }[];
   keepAttachedTo?: string | null; // Drawing ID to keep permanently attached
   attachedGroupId?: string; // Group ID for permanent relative move linking
-  lassoFills?: { localLassoPoints: Point[], color: string }[]; // Sub-areas colored via lasso tool
+  lassoFills?: { localLassoPoints: Point[], color: string, origBounds?: { minX: number, minY: number, width: number, height: number }, origPoints?: Point[] }[]; // Sub-areas colored via lasso tool
   zIndex?: number; // Sorting order within the layer
   shadow?: ObjectShadow;
   innerShadow?: ObjectInnerShadow;

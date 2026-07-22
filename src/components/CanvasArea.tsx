@@ -668,7 +668,7 @@ const deformWithFlexCurve = (p: Point, fcs: FlexCurveState): Point => {
 
   const pts = fcs.points;
   const numPts = pts.length;
-  const radius = fcs.influenceRadius || 120;
+  const radius = Math.max(fcs.influenceRadius || 120, 1200);
   
   let totalWeight = 0;
   let accumDx = 0;
@@ -731,6 +731,104 @@ const deformWithFlexCurve = (p: Point, fcs: FlexCurveState): Point => {
     x: p.x + accumDx / totalWeight,
     y: p.y + accumDy / totalWeight
   };
+};
+
+const getWorldLassoPointsForObject = (
+  fill: {
+    localLassoPoints: Point[];
+    color: string;
+    origBounds?: { minX: number; minY: number; width: number; height: number };
+    origPoints?: Point[];
+  },
+  obj: VectorObject,
+  localPivot: any
+): Point[] => {
+  if (!fill.localLassoPoints || fill.localLassoPoints.length === 0) return [];
+
+  const currObjPoints = obj.points && obj.points.length > 0 ? obj.points : [];
+
+  // Snapshot origPoints on fill if missing so we have a reference baseline
+  if (!fill.origPoints && currObjPoints.length > 0) {
+    fill.origPoints = currObjPoints.map(p => ({ x: p.x, y: p.y }));
+  }
+
+  const origObjPoints = fill.origPoints && fill.origPoints.length === currObjPoints.length
+    ? fill.origPoints
+    : currObjPoints;
+
+  const N = origObjPoints.length;
+
+  // Compute bounding boxes for bounding box remapping setup
+  const origBox = fill.origBounds || (origObjPoints.length > 0 ? calculateBoundingBox(origObjPoints) : calculateBoundingBox(fill.localLassoPoints));
+  const currBox = currObjPoints.length > 0 ? calculateBoundingBox(currObjPoints) : origBox;
+
+  const origMinX = (origBox as any).minX ?? (origBox as any).x ?? 0;
+  const origMinY = (origBox as any).minY ?? (origBox as any).y ?? 0;
+  const currMinX = (currBox as any).x ?? (currBox as any).minX ?? 0;
+  const currMinY = (currBox as any).y ?? (currBox as any).minY ?? 0;
+  const origW = Math.max(1, origBox.width);
+  const origH = Math.max(1, origBox.height);
+  const currW = Math.max(1, currBox.width);
+  const currH = Math.max(1, currBox.height);
+
+  return fill.localLassoPoints.map(p => {
+    let remappedLocalP: Point = { ...p };
+
+    // 1. Calculate Bounding Box remapped position
+    if (origW > 0 && origH > 0 && currW > 0 && currH > 0) {
+      const u = (p.x - origMinX) / origW;
+      const v = (p.y - origMinY) / origH;
+      remappedLocalP = {
+        x: currMinX + u * currW,
+        y: currMinY + v * currH
+      };
+    }
+
+    // 2. Calculate Inverse Distance Weighting (IDW) displacement if vertices moved relative to box
+    if (N >= 2 && N === currObjPoints.length) {
+      let totalW = 0;
+      let accumDx = 0;
+      let accumDy = 0;
+      let exactMatch = false;
+
+      for (let i = 0; i < N; i++) {
+        const origP = origObjPoints[i];
+        const currP = currObjPoints[i];
+
+        const dx = p.x - origP.x;
+        const dy = p.y - origP.y;
+        const distSq = dx * dx + dy * dy;
+
+        if (distSq < 0.0001) {
+          remappedLocalP = { x: currP.x, y: currP.y };
+          exactMatch = true;
+          break;
+        }
+
+        const w = 1.0 / distSq;
+        // Calculate displacement beyond uniform box scaling
+        const expectedScaledX = currMinX + ((origP.x - origMinX) / origW) * currW;
+        const expectedScaledY = currMinY + ((origP.y - origMinY) / origH) * currH;
+        const nonLinearDevX = currP.x - expectedScaledX;
+        const nonLinearDevY = currP.y - expectedScaledY;
+
+        accumDx += w * nonLinearDevX;
+        accumDy += w * nonLinearDevY;
+        totalW += w;
+      }
+
+      if (!exactMatch && totalW > 0) {
+        remappedLocalP.x += accumDx / totalW;
+        remappedLocalP.y += accumDy / totalW;
+      }
+    }
+
+    // 3. Apply secondary non-linear deformations (FlexCurve, MeshWrap, Cage, PuppetPins, Spline, etc.)
+    const deformed = deformLocalPoint(remappedLocalP, obj);
+
+    // 4. Transform to world space
+    return localToWorld(deformed, obj.transform, localPivot);
+  });
 };
 
 const deformLocalPoint = (p: Point, drawObj: VectorObject, idx?: number, subPathIdx?: number): Point => {
@@ -5336,10 +5434,7 @@ export default function CanvasArea({
             // Clip 2: Only draw inside the lasso selection path
             ctx.beginPath();
             const localPivot = drawObj.pivots[0] || { localX: 0, localY: 0 };
-            const worldLassoPoints = fill.localLassoPoints.map(p => {
-              const deformed = deformLocalPoint(p, drawObj);
-              return localToWorld(deformed, drawObj.transform, localPivot);
-            });
+            const worldLassoPoints = getWorldLassoPointsForObject(fill, drawObj, localPivot);
             if (worldLassoPoints.length > 0) {
               ctx.moveTo(worldLassoPoints[0].x, worldLassoPoints[0].y);
               for (let i = 1; i < worldLassoPoints.length; i++) {
@@ -5712,10 +5807,7 @@ export default function CanvasArea({
           // Clip 2: Only draw inside the lasso selection path
           ctx.beginPath();
           const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
-          const worldLassoPoints = fill.localLassoPoints.map(p => {
-            const deformed = deformLocalPoint(p, obj);
-            return localToWorld(deformed, obj.transform, localPivot);
-          });
+          const worldLassoPoints = getWorldLassoPointsForObject(fill, obj, localPivot);
           if (worldLassoPoints.length > 0) {
             ctx.moveTo(worldLassoPoints[0].x, worldLassoPoints[0].y);
             for (let i = 1; i < worldLassoPoints.length; i++) {
@@ -5839,45 +5931,47 @@ export default function CanvasArea({
       ctx.closePath();
       ctx.stroke();
 
-      // 1.5. Draw Vertical (Top-to-Bottom) and Horizontal (Left-to-Right) Axis Guide Lines on Drawing
-      const vTop = localToWorld({ x: box.x + box.width / 2, y: box.y }, obj.transform, pivot);
-      const vBottom = localToWorld({ x: box.x + box.width / 2, y: box.y + box.height }, obj.transform, pivot);
-      const hLeft = localToWorld({ x: box.x, y: box.y + box.height / 2 }, obj.transform, pivot);
-      const hRight = localToWorld({ x: box.x + box.width, y: box.y + box.height / 2 }, obj.transform, pivot);
-      const centerPt = localToWorld({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, obj.transform, pivot);
+      // 1.5. Draw Vertical (Top-to-Bottom) and Horizontal (Left-to-Right) Axis Guide Lines on Drawing (only when Curve Tool is active)
+      if (activeTool === 'CRV' || activeTool === 'CPT') {
+        const vTop = localToWorld({ x: box.x + box.width / 2, y: box.y }, obj.transform, pivot);
+        const vBottom = localToWorld({ x: box.x + box.width / 2, y: box.y + box.height }, obj.transform, pivot);
+        const hLeft = localToWorld({ x: box.x, y: box.y + box.height / 2 }, obj.transform, pivot);
+        const hRight = localToWorld({ x: box.x + box.width, y: box.y + box.height / 2 }, obj.transform, pivot);
+        const centerPt = localToWorld({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, obj.transform, pivot);
 
-      ctx.save();
-      // Subtle dark outline for high contrast against any background color
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(vTop.x, vTop.y);
-      ctx.lineTo(vBottom.x, vBottom.y);
-      ctx.moveTo(hLeft.x, hLeft.y);
-      ctx.lineTo(hRight.x, hRight.y);
-      ctx.stroke();
+        ctx.save();
+        // Subtle dark outline for high contrast against any background color
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(vTop.x, vTop.y);
+        ctx.lineTo(vBottom.x, vBottom.y);
+        ctx.moveTo(hLeft.x, hLeft.y);
+        ctx.lineTo(hRight.x, hRight.y);
+        ctx.stroke();
 
-      // Main crisp dashed guide lines (emerald cyan)
-      ctx.strokeStyle = '#10B981';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(vTop.x, vTop.y);
-      ctx.lineTo(vBottom.x, vBottom.y);
-      ctx.moveTo(hLeft.x, hLeft.y);
-      ctx.lineTo(hRight.x, hRight.y);
-      ctx.stroke();
+        // Main crisp dashed guide lines (emerald cyan)
+        ctx.strokeStyle = '#10B981';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(vTop.x, vTop.y);
+        ctx.lineTo(vBottom.x, vBottom.y);
+        ctx.moveTo(hLeft.x, hLeft.y);
+        ctx.lineTo(hRight.x, hRight.y);
+        ctx.stroke();
 
-      // Center crosshair marker
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#10B981';
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(centerPt.x, centerPt.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+        // Center crosshair marker
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#10B981';
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(centerPt.x, centerPt.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // 2. Draw line connecting to Top Rotation Handle
       ctx.beginPath();

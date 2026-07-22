@@ -981,7 +981,7 @@ export default function App() {
     setLeftOpen(prev => {
       const next = typeof val === 'function' ? val(prev) : val;
       if (next && typeof window !== 'undefined' && window.innerWidth < 1024) {
-        setRightOpen(false);
+        setTimeout(() => setRightOpen(false), 0);
       }
       return next;
     });
@@ -991,7 +991,7 @@ export default function App() {
     setRightOpen(prev => {
       const next = typeof val === 'function' ? val(prev) : val;
       if (next && typeof window !== 'undefined' && window.innerWidth < 1024) {
-        setLeftOpen(false);
+        setTimeout(() => setLeftOpen(false), 0);
       }
       return next;
     });
