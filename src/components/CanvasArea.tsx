@@ -654,7 +654,7 @@ const initializeFlexCurveState = (obj: VectorObject, nodeCount = 4): FlexCurveSt
 
   return {
     active: true,
-    isAttached: false,
+    isAttached: true,
     points,
     influenceRadius: Math.max(80, Math.max(width, height) * 0.4),
     preserveLength: true
@@ -2879,8 +2879,8 @@ export default function CanvasArea({
       return;
     }
 
-    // CPT (Curve Path Tool) tool pointer down logic
-    if (activeTool === 'CPT') {
+    // CPT & CRV (Curve Path & Curve Line Deformer) pointer down logic
+    if (activeTool === 'CPT' || activeTool === 'CRV') {
       let activeId = selectedObjectId;
       if (!activeId) {
         const clickedObj = performHitTest(coords);
@@ -2893,7 +2893,7 @@ export default function CanvasArea({
       if (activeId && objects[activeId]) {
         let obj = objects[activeId];
         
-        // Auto-initialize Curve Path state if not present or inactive
+        // Auto-initialize Curve Path state (horizontal & vertical curve lines) if not present or inactive
         if (!obj.curvePathState || !obj.curvePathState.active) {
           const initCps = initializeCurvePathState(obj);
           setObjects(prev => ({
@@ -2906,17 +2906,30 @@ export default function CanvasArea({
           obj = { ...obj, curvePathState: initCps };
         }
 
+        // Auto-initialize Flex Curve state if not present or inactive
+        if (!obj.flexCurveState || !obj.flexCurveState.active) {
+          const initFcs = initializeFlexCurveState(obj);
+          setObjects(prev => ({
+            ...prev,
+            [activeId!]: {
+              ...prev[activeId!],
+              flexCurveState: initFcs
+            }
+          }));
+          obj = { ...obj, flexCurveState: initFcs };
+        }
+
+        const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
+
+        // 1. Check Horizontal curve control points (Left-to-Right)
         if (obj.curvePathState) {
           const cps = obj.curvePathState;
           const hCPs = cps.hControlPoints || [];
           const vCPs = cps.vControlPoints || [];
-          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
-          
           let clickedIdx = -1;
           let isH = false;
-          let minDist = 30 / zoomScale; // clickable handle radius
+          let minDist = 30 / zoomScale;
 
-          // 1. Check Horizontal control points
           hCPs.forEach((pt, idx) => {
             const worldPt = localToWorld(pt, obj.transform, localPivot);
             const d = distance(coords, worldPt);
@@ -2927,7 +2940,7 @@ export default function CanvasArea({
             }
           });
 
-          // 2. Check Vertical control points
+          // 2. Check Vertical curve control points (Top-to-Bottom)
           if (clickedIdx === -1) {
             vCPs.forEach((pt, idx) => {
               const worldPt = localToWorld(pt, obj.transform, localPivot);
@@ -2948,46 +2961,14 @@ export default function CanvasArea({
             return;
           }
         }
-      }
-      return;
-    }
 
-    // CRV (Curve Line Deformer) tool pointer down logic
-    if (activeTool === 'CRV') {
-      let activeId = selectedObjectId;
-      if (!activeId) {
-        const clickedObj = performHitTest(coords);
-        if (clickedObj) {
-          setSelectedObjectId(clickedObj.id);
-          activeId = clickedObj.id;
-        }
-      }
-
-      if (activeId && objects[activeId]) {
-        let obj = objects[activeId];
-        
-        // Auto-initialize Flex Curve state if not present or inactive
-        if (!obj.flexCurveState || !obj.flexCurveState.active) {
-          const initFcs = initializeFlexCurveState(obj);
-          setObjects(prev => ({
-            ...prev,
-            [activeId!]: {
-              ...prev[activeId!],
-              flexCurveState: initFcs
-            }
-          }));
-          obj = { ...obj, flexCurveState: initFcs };
-        }
-
+        // 3. Check Flex Curve control points & body
         if (obj.flexCurveState && obj.flexCurveState.points) {
           const fcs = obj.flexCurveState;
           const pts = fcs.points || [];
-          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
-          
           let clickedIdx = -1;
-          let minDist = 30 / zoomScale; // clickable handle radius
+          let minDist = 30 / zoomScale;
 
-          // 1. Check control point handle hits
           pts.forEach((pt, idx) => {
             const worldPt = localToWorld({ x: pt.x, y: pt.y }, obj.transform, localPivot);
             const d = distance(coords, worldPt);
@@ -3005,7 +2986,6 @@ export default function CanvasArea({
             return;
           }
 
-          // 2. Check if clicked near curve line body to drag entire line
           const localPos = worldToLocal(coords, obj.transform, localPivot);
           let closeToLine = false;
           for (let i = 0; i < pts.length - 1; i++) {
@@ -6194,8 +6174,8 @@ export default function CanvasArea({
       }
     }
 
-    // CPT (Curve Path Tool) overlay rendering
-    if (activeTool === 'CPT' && effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
+    // CPT & CRV (Curve Path & Curve Line Deformer) overlay rendering
+    if ((activeTool === 'CPT' || activeTool === 'CRV' || (effectiveSelectedObjectId && objects[effectiveSelectedObjectId]?.curvePathState?.active)) && effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
       const obj = objects[effectiveSelectedObjectId];
       if (obj.curvePathState && obj.curvePathState.active) {
         const cps = obj.curvePathState;
