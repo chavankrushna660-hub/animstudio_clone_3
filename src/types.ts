@@ -221,6 +221,10 @@ export interface VectorObject {
   innerSpace3D?: number;
   depth3D?: number;
   fillGaps3D?: boolean;
+  fillGaps?: boolean;
+  autoFillGaps?: boolean;
+  deepGapCorrected?: boolean;
+  gapFillExpansion?: number;
   selectedFaceIndex?: number;
   selectedEdgeIndex?: number;
   shape3DType?: 'car' | 'character' | 'chair' | 'sphere' | 'box' | 'sword';

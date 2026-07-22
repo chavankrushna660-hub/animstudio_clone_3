@@ -5193,7 +5193,7 @@ export default function CanvasArea({
       const worldPoints = localPoints.map(p => localToWorld(p, drawObj.transform, pivot));
 
       // Draw all paths (main points + subPaths of merged drawings)
-      const drawAllPaths = () => {
+      const drawAllPaths = (forceClosePaths: boolean = false) => {
         ctx.beginPath();
         if (worldPoints.length > 0) {
           let penDown = false;
@@ -5202,7 +5202,7 @@ export default function CanvasArea({
             const isGap = localPoints[i]?.gap;
             if (isHidden) {
               penDown = false;
-            } else if (isGap) {
+            } else if (isGap && !forceClosePaths && !drawObj.fillGaps && !drawObj.autoFillGaps) {
               ctx.moveTo(worldPoints[i].x, worldPoints[i].y);
               penDown = true;
             } else {
@@ -5213,6 +5213,9 @@ export default function CanvasArea({
                 ctx.lineTo(worldPoints[i].x, worldPoints[i].y);
               }
             }
+          }
+          if (forceClosePaths || drawObj.fillGaps || drawObj.autoFillGaps || (drawObj.fillColor && drawObj.fillColor !== 'transparent')) {
+            ctx.closePath();
           }
         }
         if (drawObj.subPaths && drawObj.subPaths.length > 0) {
@@ -5234,6 +5237,9 @@ export default function CanvasArea({
                     ctx.lineTo(worldSubPoints[i].x, worldSubPoints[i].y);
                   }
                 }
+              }
+              if (forceClosePaths || drawObj.fillGaps || drawObj.autoFillGaps || (drawObj.fillColor && drawObj.fillColor !== 'transparent')) {
+                ctx.closePath();
               }
             }
           });
@@ -5673,9 +5679,19 @@ export default function CanvasArea({
         // 1. Always fill underlying interior path if fillColor is specified (for shapes, strokes & continuous drawings)
         if (drawObj.fillColor && drawObj.fillColor !== 'transparent') {
           ctx.save();
-          drawAllPaths();
+          drawAllPaths(true);
           ctx.fillStyle = drawObj.fillColor;
           ctx.fill();
+
+          // Dilation bleed to eliminate microscopic antialiasing seams & gaps between stroke and fill
+          const expansion = drawObj.gapFillExpansion ?? (drawObj.autoFillGaps || drawObj.fillGaps ? 4 : 2);
+          if (expansion > 0) {
+            ctx.strokeStyle = drawObj.fillColor;
+            ctx.lineWidth = expansion * 2;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+          }
           ctx.restore();
         }
 
@@ -5801,7 +5817,15 @@ export default function CanvasArea({
           ctx.save();
           
           // Clip 1: Only draw inside the parent drawing's bounds
-          drawAllPaths();
+          drawAllPaths(true);
+          if (obj.autoFillGaps || obj.fillGaps || (obj.gapFillExpansion && obj.gapFillExpansion > 0)) {
+            const exp = obj.gapFillExpansion ?? 4;
+            ctx.strokeStyle = fill.color;
+            ctx.lineWidth = exp * 2;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+          }
           ctx.clip();
           
           // Clip 2: Only draw inside the lasso selection path
@@ -5818,9 +5842,19 @@ export default function CanvasArea({
           ctx.clip();
           
           // Fill the clipped region with the lasso color
-          drawAllPaths();
+          drawAllPaths(true);
           ctx.fillStyle = fill.color;
           ctx.fill();
+
+          // Dilation bleed stroke for lasso fills to seal gaps completely as drawing deforms
+          const fillExp = obj.gapFillExpansion ?? (obj.autoFillGaps || obj.fillGaps ? 4 : 2);
+          if (fillExp > 0) {
+            ctx.strokeStyle = fill.color;
+            ctx.lineWidth = fillExp * 2;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+          }
           
           ctx.restore();
         });

@@ -950,6 +950,89 @@ export default function RightPanel({
   // Permanent Attachment state
   const [attachmentPieces, setAttachmentPieces] = useState<string[]>([]);
   const [attachSelectedId, setAttachSelectedId] = useState('');
+  const [gapFillFeedback, setGapFillFeedback] = useState<string | null>(null);
+
+  // Deep Gap Filler handler
+  const handleDeepFillGaps = () => {
+    let targetObjects = selectedObject 
+      ? [selectedObject] 
+      : Object.values(objects).filter(o => !o.isLocked && !o.isHidden && o.type !== 'image' && o.type !== 'text');
+
+    if (targetObjects.length === 0) {
+      setGapFillFeedback('No unlocked drawings found to fill gaps.');
+      setTimeout(() => setGapFillFeedback(null), 3500);
+      return;
+    }
+
+    let count = 0;
+    targetObjects.forEach(obj => {
+      count++;
+      let fillColor = obj.fillColor;
+      if (!fillColor || fillColor === 'transparent') {
+        if (obj.lassoFills && obj.lassoFills.length > 0) {
+          fillColor = obj.lassoFills[obj.lassoFills.length - 1].color;
+        } else if (lassoColor && lassoColor !== 'transparent') {
+          fillColor = lassoColor;
+        } else if (obj.strokeColor && obj.strokeColor !== 'transparent') {
+          fillColor = obj.strokeColor;
+        } else {
+          fillColor = '#E53935';
+        }
+      }
+
+      let updatedPoints = obj.points ? [...obj.points] : [];
+      if (updatedPoints.length >= 3) {
+        const first = updatedPoints[0];
+        const last = updatedPoints[updatedPoints.length - 1];
+        const dist = Math.hypot(last.x - first.x, last.y - first.y);
+        if (dist > 1.0) {
+          updatedPoints.push({ x: first.x, y: first.y });
+        }
+      }
+
+      let updatedSubPaths = obj.subPaths ? obj.subPaths.map(sp => {
+        let sub = [...sp];
+        if (sub.length >= 3) {
+          const f = sub[0];
+          const l = sub[sub.length - 1];
+          if (Math.hypot(l.x - f.x, l.y - f.y) > 1.0) {
+            sub.push({ x: f.x, y: f.y });
+          }
+        }
+        return sub;
+      }) : undefined;
+
+      const bounds = updatedPoints.length > 0 ? calculateBoundingBox(updatedPoints) : { x: 0, y: 0, width: 100, height: 100 };
+      const origBounds = {
+        minX: bounds.x,
+        minY: bounds.y,
+        width: Math.max(1, bounds.width),
+        height: Math.max(1, bounds.height)
+      };
+      const origPoints = updatedPoints.map(p => ({ x: p.x, y: p.y }));
+
+      const updatedFills = obj.lassoFills ? obj.lassoFills.map(f => ({
+        ...f,
+        color: f.color || fillColor,
+        origBounds: f.origBounds || origBounds,
+        origPoints: f.origPoints || origPoints
+      })) : [];
+
+      updateObject(obj.id, {
+        fillColor,
+        fillGaps: true,
+        autoFillGaps: true,
+        deepGapCorrected: true,
+        gapFillExpansion: obj.gapFillExpansion || 4,
+        points: updatedPoints,
+        subPaths: updatedSubPaths,
+        lassoFills: updatedFills
+      });
+    });
+
+    setGapFillFeedback(`✨ Deep Gap Analysis Complete: Sealed and filled all gaps in ${count} drawing(s)!`);
+    setTimeout(() => setGapFillFeedback(null), 4000);
+  };
 
   // Lasso handlers
   const handleApplyLassoFill = () => {
@@ -983,7 +1066,12 @@ export default function RightPanel({
       const currentFills = obj.lassoFills || [];
       const updatedFills = [...currentFills, { localLassoPoints, color: lassoColor, origBounds, origPoints }];
       
-      updateObject(obj.id, { lassoFills: updatedFills });
+      updateObject(obj.id, {
+        lassoFills: updatedFills,
+        fillGaps: true,
+        autoFillGaps: true,
+        gapFillExpansion: obj.gapFillExpansion || 4
+      });
     });
 
     setLassoPoints([]);
@@ -7457,6 +7545,97 @@ export default function RightPanel({
                     Reset Fills
                   </button>
                 </div>
+              </div>
+            </div>
+
+            {/* DEEP GAP FILL & AUTO-CORRECT PANEL */}
+            <div className="space-y-4 bg-neutral-950/40 p-4 rounded-2xl border border-neutral-800/50 mt-4 animate-fade-in">
+              <div className="flex items-center justify-between text-[10px] text-amber-400 font-black uppercase tracking-wider border-b border-neutral-800/40 pb-2.5">
+                <span className="flex items-center gap-1.5">
+                  <Maximize2 className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+                  Deep Gap Fill & Auto-Correct
+                </span>
+                {selectedObject?.autoFillGaps && (
+                  <span className="bg-emerald-500/10 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded-full border border-emerald-500/20">
+                    AUTO-FILL ACTIVE
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <p className="text-[11px] text-neutral-400 leading-relaxed font-medium">
+                  Deeply scans drawings to detect and seal unclosed path gaps, missing interior fills, and microscopic hairline seams. Automatically expands and updates as drawings scale, flex, or deform.
+                </p>
+
+                {/* Primary Fill Gap Action Button */}
+                <button
+                  type="button"
+                  onClick={handleDeepFillGaps}
+                  className="w-full py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black uppercase text-xs rounded-xl tracking-wider shadow-lg shadow-amber-500/15 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  FILL DEEP GAPS NOW
+                </button>
+
+                {/* Feedback message banner if gap fill executed */}
+                {gapFillFeedback && (
+                  <div className="p-2.5 bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold rounded-xl animate-fade-in flex items-center gap-1.5">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>{gapFillFeedback}</span>
+                  </div>
+                )}
+
+                {/* Auto Fill Gaps Toggle */}
+                {selectedObject && (
+                  <div className="space-y-2.5 pt-2 border-t border-neutral-800/30">
+                    <div className="flex items-center justify-between bg-neutral-900/60 p-2.5 rounded-xl border border-neutral-800/60">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-neutral-200 font-black uppercase tracking-wider">Auto-Fill Gaps on Transform</span>
+                        <span className="text-[8px] text-neutral-400">Expands fill continuously as drawing scales or deforms</span>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!selectedObject.autoFillGaps}
+                          onChange={(e) => {
+                            const isChecked = e.target.checked;
+                            updateObject(selectedObject.id, {
+                              autoFillGaps: isChecked,
+                              fillGaps: isChecked,
+                              gapFillExpansion: selectedObject.gapFillExpansion || 4
+                            });
+                          }}
+                          className="sr-only peer"
+                        />
+                        <div className="w-8 h-4 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-neutral-400 after:border-neutral-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 peer-checked:after:bg-white" />
+                      </label>
+                    </div>
+
+                    {/* Gap Fill Expansion Slider */}
+                    <div className="space-y-1 bg-neutral-900/40 p-2.5 rounded-xl border border-neutral-800/40">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wide">Gap Fill Expansion / Dilation</span>
+                        <span className="text-amber-400 font-black text-[10px]">{selectedObject.gapFillExpansion ?? 4}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="12"
+                        step="0.5"
+                        value={selectedObject.gapFillExpansion ?? 4}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          updateObject(selectedObject.id, {
+                            gapFillExpansion: val,
+                            fillGaps: true,
+                            autoFillGaps: true
+                          });
+                        }}
+                        className="w-full h-1 bg-neutral-950 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
