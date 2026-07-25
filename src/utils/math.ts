@@ -208,17 +208,133 @@ export function unifyStrokesToSinglePath(strokes: Point[][]): Point[] {
   return currentChain;
 }
 
+function lineIntersection(p1: Point, p2: Point, p3: Point, p4: Point): Point | null {
+  const denom = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
+  if (Math.abs(denom) < 1e-6) return null;
+
+  const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / denom;
+  const ub = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / denom;
+
+  if (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) {
+    return {
+      x: p1.x + ua * (p2.x - p1.x),
+      y: p1.y + ua * (p2.y - p1.y)
+    };
+  }
+  return null;
+}
+
+function getPolygonArea(pts: Point[]): number {
+  if (!pts || pts.length < 3) return 0;
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    area += pts[i].x * pts[j].y;
+    area -= pts[j].x * pts[i].y;
+  }
+  return Math.abs(area) / 2;
+}
+
+export function detectContinuousSubPaths(points: Point[]): Point[][] {
+  if (!points || points.length < 3) return points && points.length > 0 ? [points] : [];
+
+  const subPaths: Point[][] = [];
+
+  // Pass 1: Find all self-intersections and extracted closed loops
+  const N = points.length;
+  const loopCandidates: Point[][] = [];
+
+  for (let i = 0; i < N - 3; i++) {
+    for (let j = i + 3; j < N; j++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[j];
+      const p4 = points[j + 1] || points[0];
+
+      const intersect = lineIntersection(p1, p2, p3, p4);
+      const dist = distance(p1, p3);
+
+      if (intersect || dist < 25) {
+        const cutPt = intersect || { x: (p1.x + p3.x) / 2, y: (p1.y + p3.y) / 2 };
+        const loop = [cutPt, ...points.slice(i + 1, j + 1), cutPt];
+        if (loop.length >= 3 && getPolygonArea(loop) > 20) {
+          loopCandidates.push(loop);
+        }
+      }
+    }
+  }
+
+  // Deduplicate overlapping/identical loops
+  loopCandidates.forEach(candidate => {
+    const candArea = getPolygonArea(candidate);
+    const isDuplicate = subPaths.some(existing => {
+      const existArea = getPolygonArea(existing);
+      return Math.abs(candArea - existArea) < 50;
+    });
+    if (!isDuplicate) {
+      subPaths.push(candidate);
+    }
+  });
+
+  // Always include the full outer envelope loop
+  const outerLoop = [...points];
+  if (distance(outerLoop[0], outerLoop[outerLoop.length - 1]) > 1e-3) {
+    outerLoop.push({ ...outerLoop[0] });
+  }
+  if (getPolygonArea(outerLoop) > 20) {
+    subPaths.push(outerLoop);
+  }
+
+  // Sort subPaths from largest area (outer envelope) to smallest area (inner details/eyes/mouth)
+  subPaths.sort((a, b) => getPolygonArea(b) - getPolygonArea(a));
+
+  return subPaths.length > 0 ? subPaths : [points];
+}
+
+export function extractAllSubPaths(obj: VectorObject): Point[][] {
+  if (!obj) return [];
+  
+  // 1. If explicit subPaths array exists and is not empty, use it
+  if (obj.subPaths && obj.subPaths.length > 0) {
+    const valid = obj.subPaths.filter(s => s && s.length > 0);
+    if (valid.length > 0) return valid;
+  }
+
+  if (!obj.points || obj.points.length === 0) return [];
+
+  // 2. Check for gap markers inside obj.points
+  const gapSegments: Point[][] = [];
+  let currentSeg: Point[] = [];
+  for (let i = 0; i < obj.points.length; i++) {
+    const pt = obj.points[i];
+    if (pt.gap && currentSeg.length > 0) {
+      gapSegments.push(currentSeg);
+      currentSeg = [];
+    }
+    currentSeg.push(pt);
+  }
+  if (currentSeg.length > 0) {
+    gapSegments.push(currentSeg);
+  }
+
+  if (gapSegments.length > 1) {
+    return gapSegments;
+  }
+
+  // 3. For continuous single-stroke drawings, detect all loops and self-intersections
+  return detectContinuousSubPaths(obj.points);
+}
+
 export function finalizeContinuousObject(obj: VectorObject): VectorObject {
   if (!obj) return obj;
-  const allStrokes = obj.subPaths && obj.subPaths.length > 0 
-    ? obj.subPaths 
-    : [obj.points];
+  const extractedSubs = extractAllSubPaths(obj);
+  const allStrokes = extractedSubs.length > 0 ? extractedSubs : [obj.points];
   const unifiedPts = unifyStrokesToSinglePath(allStrokes);
 
   return {
     ...obj,
     points: unifiedPts,
-    subPaths: obj.subPaths,
+    subPaths: extractedSubs.length > 0 ? extractedSubs : obj.subPaths,
     joinedStrokesDemo: [...unifiedPts],
     isContinuousDrawing: true,
   };

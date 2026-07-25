@@ -346,7 +346,63 @@ export function generate3DGeometry(type: 'car' | 'character' | 'chair' | 'sphere
 }
 
 /**
- * Applies 3D Euler Angles, translation, and scale rotations to a 3D vertex
+ * Applies 3D Euler Angles, translation, and scale rotations to an array of 3D vertices efficiently
+ */
+export function transform3DVertices(
+  vertices: Vertex3D[],
+  tx: number, ty: number, tz: number,
+  rx: number, ry: number, rz: number,
+  sx: number, sy: number, sz: number
+): Vertex3D[] {
+  const radX = (rx * Math.PI) / 180;
+  const radY = (ry * Math.PI) / 180;
+  const radZ = (rz * Math.PI) / 180;
+
+  const cosX = rx !== 0 ? Math.cos(radX) : 1;
+  const sinX = rx !== 0 ? Math.sin(radX) : 0;
+  const cosY = ry !== 0 ? Math.cos(radY) : 1;
+  const sinY = ry !== 0 ? Math.sin(radY) : 0;
+  const cosZ = rz !== 0 ? Math.cos(radZ) : 1;
+  const sinZ = rz !== 0 ? Math.sin(radZ) : 0;
+
+  const len = vertices.length;
+  const result: Vertex3D[] = new Array(len);
+
+  for (let i = 0; i < len; i++) {
+    const v = vertices[i];
+    let x = v.x * sx;
+    let y = v.y * sy;
+    let z = v.z * sz;
+
+    if (rx !== 0) {
+      const y1 = y * cosX - z * sinX;
+      const z1 = y * sinX + z * cosX;
+      y = y1;
+      z = z1;
+    }
+
+    if (ry !== 0) {
+      const x2 = x * cosY + z * sinY;
+      const z2 = -x * sinY + z * cosY;
+      x = x2;
+      z = z2;
+    }
+
+    if (rz !== 0) {
+      const x3 = x * cosZ - y * sinZ;
+      const y3 = x * sinZ + y * cosZ;
+      x = x3;
+      y = y3;
+    }
+
+    result[i] = { x: x + tx, y: y + ty, z: z + tz };
+  }
+
+  return result;
+}
+
+/**
+ * Applies 3D Euler Angles, translation, and scale rotations to a single 3D vertex
  */
 export function transform3DVertex(
   v: Vertex3D,
@@ -354,51 +410,7 @@ export function transform3DVertex(
   rx: number, ry: number, rz: number,
   sx: number, sy: number, sz: number
 ): Vertex3D {
-  // Scale
-  let x = v.x * sx;
-  let y = v.y * sy;
-  let z = v.z * sz;
-
-  const radX = (rx * Math.PI) / 180;
-  const radY = (ry * Math.PI) / 180;
-  const radZ = (rz * Math.PI) / 180;
-
-  // Rotation X (Pitch)
-  if (rx !== 0) {
-    const cosX = Math.cos(radX);
-    const sinX = Math.sin(radX);
-    const y1 = y * cosX - z * sinX;
-    const z1 = y * sinX + z * cosX;
-    y = y1;
-    z = z1;
-  }
-
-  // Rotation Y (Yaw)
-  if (ry !== 0) {
-    const cosY = Math.cos(radY);
-    const sinY = Math.sin(radY);
-    const x2 = x * cosY + z * sinY;
-    const z2 = -x * sinY + z * cosY;
-    x = x2;
-    z = z2;
-  }
-
-  // Rotation Z (Roll)
-  if (rz !== 0) {
-    const cosZ = Math.cos(radZ);
-    const sinZ = Math.sin(radZ);
-    const x3 = x * cosZ - y * sinZ;
-    const y3 = x * sinZ + y * cosZ;
-    x = x3;
-    y = y3;
-  }
-
-  // Translate
-  return {
-    x: x + tx,
-    y: y + ty,
-    z: z + tz,
-  };
+  return transform3DVertices([v], tx, ty, tz, rx, ry, rz, sx, sy, sz)[0];
 }
 
 /**

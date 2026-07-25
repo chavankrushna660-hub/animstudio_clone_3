@@ -169,6 +169,24 @@ export interface LassoDeformState {
   transform: Transform; // Transform applied exclusively to the vertices inside the lasso
 }
 
+export interface SubExtrusion {
+  id: string;
+  name?: string;
+  pointIndices: number[];
+  extrudeX: number;
+  extrudeY: number;
+  extrudeZ: number;
+  scaleX: number;
+  scaleY: number;
+  scaleZ: number;
+  rotateX: number;
+  rotateY: number;
+  rotateZ: number;
+  color?: string;
+  bevelProfile?: 'flat' | 'bevel' | 'dome' | 'taper' | 'scurve' | 'hourglass';
+  subExtrusions?: SubExtrusion[];
+}
+
 export interface VectorObject {
   id: string;
   name: string;
@@ -196,6 +214,8 @@ export interface VectorObject {
   joinedStrokesDemo?: Point[];
   hiddenPoints?: number[];
   hiddenSubPaths?: { [subPathIdx: number]: number[] };
+  subPathFills?: { [subPathIdx: number]: string }; // Individual fill color per sub-path / inner loop
+  subPathStrokes?: { [subPathIdx: number]: { strokeColor?: string, strokeWidth?: number } }; // Individual stroke style per sub-path
   hiddenLassoRegions?: { localLassoPoints: Point[] }[];
   keepOnlyLassoRegions?: { localLassoPoints: Point[] }[];
   keepAttachedTo?: string | null; // Drawing ID to keep permanently attached
@@ -223,6 +243,7 @@ export interface VectorObject {
   fillGaps3D?: boolean;
   fillGaps?: boolean;
   autoFillGaps?: boolean;
+  autoFillInnerRegion?: boolean;
   deepGapCorrected?: boolean;
   gapFillExpansion?: number;
   selectedFaceIndex?: number;
@@ -247,6 +268,8 @@ export interface VectorObject {
     scaleZ?: number;
     translateZ?: number;
     perspective?: number;
+    bevelProfile?: 'flat' | 'bevel' | 'dome' | 'taper' | 'scurve' | 'hourglass';
+    wireframe?: boolean;
     faces?: {
       front: { color: string; opacity: number; visible: boolean };
       back: { color: string; opacity: number; visible: boolean };
@@ -275,6 +298,11 @@ export interface VectorObject {
   smartMeshColor?: SmartMeshColorState;
   smartWarp?: SmartWarpState;
   cageState?: CageState;
+  wireframeMode?: boolean;
+  selectedPointIndices?: number[];
+  wireframeSelectionDone?: boolean;
+  subExtrusions?: SubExtrusion[];
+  activeSubExtrusionId?: string | null;
   
   // Spline-Based Stroke fields
   splineActive?: boolean;

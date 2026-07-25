@@ -34,8 +34,8 @@ import {
   GitFork,
   Activity
 } from 'lucide-react';
-import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings } from '../types';
-import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint, finalizeContinuousObject } from '../utils/math';
+import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings, SubExtrusion } from '../types';
+import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint, finalizeContinuousObject, extractAllSubPaths, unifyStrokesToSinglePath } from '../utils/math';
 import { extrude2DTo3D, deleteFace3D, extrudeFace3D, extrudeEdge3D } from '../utils/engine3D';
 import CustomSelect from './CustomSelect';
 
@@ -298,20 +298,34 @@ export default function RightPanel({
           }
 
           const insideSubPaths: { [subPathIdx: number]: number[] } = {};
-          if (obj.subPaths) {
-            obj.subPaths.forEach((sub, subIdx) => {
-              const insideSubIndices: number[] = [];
-              sub.forEach((p, idx) => {
-                const wPt = localToWorld(p, obj.transform, localPivot);
-                if (isPointInPolygon(wPt, lassoPoints)) {
-                  insideSubIndices.push(idx);
-                }
-              });
-              if (insideSubIndices.length > 0) {
-                insideSubPaths[subIdx] = insideSubIndices;
+          const allSubs = extractAllSubPaths(obj);
+
+          let lassoSumX = 0, lassoSumY = 0;
+          lassoPoints.forEach(p => { lassoSumX += p.x; lassoSumY += p.y; });
+          const lassoCentroid = { x: lassoSumX / (lassoPoints.length || 1), y: lassoSumY / (lassoPoints.length || 1) };
+
+          allSubs.forEach((sub, subIdx) => {
+            const insideSubIndices: number[] = [];
+            const wPts = sub.map(p => localToWorld(p, obj.transform, localPivot));
+
+            let subSumX = 0, subSumY = 0;
+            wPts.forEach((wPt, idx) => {
+              subSumX += wPt.x;
+              subSumY += wPt.y;
+              if (isPointInPolygon(wPt, lassoPoints)) {
+                insideSubIndices.push(idx);
               }
             });
-          }
+
+            const subCentroid = { x: subSumX / (wPts.length || 1), y: subSumY / (wPts.length || 1) };
+            const subCentroidInsideLasso = isPointInPolygon(subCentroid, lassoPoints);
+            const lassoCentroidInsideSub = wPts.length >= 3 && isPointInPolygon(lassoCentroid, wPts);
+            const lassoTouchSub = lassoPoints.some(lp => isPointInPolygon(lp, wPts));
+
+            if (insideSubIndices.length > 0 || subCentroidInsideLasso || lassoCentroidInsideSub || lassoTouchSub) {
+              insideSubPaths[subIdx] = insideSubIndices.length > 0 ? insideSubIndices : sub.map((_, idx) => idx);
+            }
+          });
 
           if (insideIndices.length > 0 || Object.keys(insideSubPaths).length > 0) {
             map[obj.id] = {
@@ -1063,9 +1077,51 @@ export default function RightPanel({
       const origPoints = obj.points && obj.points.length > 0 ? obj.points.map(p => ({ x: p.x, y: p.y })) : [];
       const currentFills = obj.lassoFills || [];
       const updatedFills = [...currentFills, { localLassoPoints, color: lassoColor, origBounds, origPoints }];
+
+      const allSubs = extractAllSubPaths(obj);
+      const selectedSubMap = globalLassoSelectedMap[obj.id]?.subPaths || {};
+      const nextSubPathFills = { ...(obj.subPathFills || {}) };
+
+      Object.keys(selectedSubMap).forEach(subIdxStr => {
+        const subIdx = parseInt(subIdxStr, 10);
+        nextSubPathFills[subIdx] = lassoColor;
+      });
+
+      if (Object.keys(selectedSubMap).length === 0 && allSubs.length >= 1) {
+        let lassoSumX = 0, lassoSumY = 0;
+        lassoPoints.forEach(p => { lassoSumX += p.x; lassoSumY += p.y; });
+        const lassoCentroid = { x: lassoSumX / (lassoPoints.length || 1), y: lassoSumY / (lassoPoints.length || 1) };
+
+        const matchingSubIndices: { idx: number; area: number }[] = [];
+
+        allSubs.forEach((sub, subIdx) => {
+          const wPts = sub.map(p => localToWorld(p, obj.transform, localPivot));
+          const isLassoInSub = wPts.length >= 3 && isPointInPolygon(lassoCentroid, wPts);
+          const isSubInLasso = wPts.some(pt => isPointInPolygon(pt, lassoPoints));
+          const isLassoPtInSub = lassoPoints.some(lp => isPointInPolygon(lp, wPts));
+
+          if (isLassoInSub || isSubInLasso || isLassoPtInSub) {
+            let area = 0;
+            for (let i = 0; i < wPts.length; i++) {
+              const j = (i + 1) % wPts.length;
+              area += wPts[i].x * wPts[j].y - wPts[j].x * wPts[i].y;
+            }
+            matchingSubIndices.push({ idx: subIdx, area: Math.abs(area) / 2 });
+          }
+        });
+
+        if (matchingSubIndices.length > 0) {
+          // Sort by area ascending so the innermost (smallest) matching sub-path is chosen
+          matchingSubIndices.sort((a, b) => a.area - b.area);
+          const targetSubIdx = matchingSubIndices[0].idx;
+          nextSubPathFills[targetSubIdx] = lassoColor;
+        }
+      }
       
       updateObject(obj.id, {
         lassoFills: updatedFills,
+        subPaths: obj.subPaths && obj.subPaths.length > 0 ? obj.subPaths : (allSubs.length > 0 ? allSubs : obj.subPaths),
+        subPathFills: Object.keys(nextSubPathFills).length > 0 ? nextSubPathFills : obj.subPathFills,
         fillGaps: true,
         autoFillGaps: true,
         gapFillExpansion: obj.gapFillExpansion || 4
@@ -1472,43 +1528,139 @@ export default function RightPanel({
 
     const primary = selectedObject;
     const primaryPivot = primary.pivots[0] || { localX: 0, localY: 0 };
-    let newSubPaths = [...(primary.subPaths || [])];
 
+    let newSubPaths: Point[][] = [];
+    let newSubPathStrokes: { [subPathIdx: number]: { strokeColor?: string; strokeWidth?: number } } = {};
+    let newSubPathFills: { [subPathIdx: number]: string } = {};
+    let newLassoFills: VectorObject['lassoFills'] = [];
+    let newChildrenIds = [...(primary.childrenIds || [])];
+
+    // 1. Collect Primary's own subpaths and properties
+    const primarySubs = (primary.subPaths && primary.subPaths.length > 0)
+      ? primary.subPaths
+      : (primary.points && primary.points.length > 0 ? [primary.points] : []);
+
+    primarySubs.forEach((sub, idx) => {
+      newSubPaths.push([...sub]);
+
+      const strokeCol = primary.subPathStrokes?.[idx]?.strokeColor || primary.strokeColor;
+      const strokeW = primary.subPathStrokes?.[idx]?.strokeWidth ?? primary.strokeWidth;
+      newSubPathStrokes[idx] = { strokeColor: strokeCol, strokeWidth: strokeW };
+
+      const fillCol = primary.subPathFills?.[idx] || (primary.fillColor && primary.fillColor !== 'transparent' ? primary.fillColor : undefined);
+      if (fillCol) {
+        newSubPathFills[idx] = fillCol;
+      }
+    });
+
+    if (primary.lassoFills && primary.lassoFills.length > 0) {
+      newLassoFills.push(...primary.lassoFills);
+    }
+
+    // 2. Merge each secondary object into primary preserving position and individual styles
     mergePieces.forEach(secondaryId => {
       const secondary = objects[secondaryId];
       if (!secondary) return;
 
       const secondaryPivot = secondary.pivots[0] || { localX: 0, localY: 0 };
 
-      // Convert main points
-      const convertedMainPath = secondary.points.map(p => {
-        const worldPt = localToWorld(p, secondary.transform, secondaryPivot);
-        return worldToLocal(worldPt, primary.transform, primaryPivot);
-      });
-      if (convertedMainPath.length > 0) {
-        newSubPaths.push(convertedMainPath);
-      }
+      const secSubs = (secondary.subPaths && secondary.subPaths.length > 0)
+        ? secondary.subPaths
+        : (secondary.points && secondary.points.length > 0 ? [secondary.points] : []);
 
-      // Convert subpaths
-      if (secondary.subPaths && secondary.subPaths.length > 0) {
-        secondary.subPaths.forEach(sub => {
-          const convertedSubPath = sub.map(p => {
-            const worldPt = localToWorld(p, secondary.transform, secondaryPivot);
-            return worldToLocal(worldPt, primary.transform, primaryPivot);
-          });
-          if (convertedSubPath.length > 0) {
-            newSubPaths.push(convertedSubPath);
+      secSubs.forEach((sub, secIdx) => {
+        const currentIdx = newSubPaths.length;
+
+        // Convert secondary points from secondary local space to primary local space
+        const convertedSub = sub.map(p => {
+          const worldPt = localToWorld(p, secondary.transform, secondaryPivot);
+          const localPt = worldToLocal(worldPt, primary.transform, primaryPivot);
+          return {
+            ...localPt,
+            w: p.w,
+            t: p.t,
+            angle: p.angle,
+            jitterX: p.jitterX,
+            jitterY: p.jitterY,
+            grainOpacity: p.grainOpacity,
+            gap: p.gap
+          };
+        });
+
+        newSubPaths.push(convertedSub);
+
+        const strokeCol = secondary.subPathStrokes?.[secIdx]?.strokeColor || secondary.strokeColor;
+        const strokeW = secondary.subPathStrokes?.[secIdx]?.strokeWidth ?? secondary.strokeWidth;
+        newSubPathStrokes[currentIdx] = { strokeColor: strokeCol, strokeWidth: strokeW };
+
+        const fillCol = secondary.subPathFills?.[secIdx] || (secondary.fillColor && secondary.fillColor !== 'transparent' ? secondary.fillColor : undefined);
+        if (fillCol) {
+          newSubPathFills[currentIdx] = fillCol;
+        }
+      });
+
+      // Convert secondary subPathFills mapping if extra keys exist
+      if (secondary.subPathFills) {
+        Object.entries(secondary.subPathFills).forEach(([oldIdxStr, fillVal]) => {
+          const oldIdx = parseInt(oldIdxStr, 10);
+          if (fillVal && oldIdx < secSubs.length) {
+            const newIdx = (newSubPaths.length - secSubs.length) + oldIdx;
+            newSubPathFills[newIdx] = fillVal;
           }
         });
       }
 
-      // Delete the secondary object
+      // Convert secondary lassoFills
+      if (secondary.lassoFills && secondary.lassoFills.length > 0) {
+        secondary.lassoFills.forEach(fill => {
+          const convertedPts = (fill.localLassoPoints || []).map(p => {
+            const worldPt = localToWorld(p, secondary.transform, secondaryPivot);
+            return worldToLocal(worldPt, primary.transform, primaryPivot);
+          });
+          const convertedOrigPts = fill.origPoints ? fill.origPoints.map(p => {
+            const worldPt = localToWorld(p, secondary.transform, secondaryPivot);
+            return worldToLocal(worldPt, primary.transform, primaryPivot);
+          }) : undefined;
+
+          newLassoFills.push({
+            ...fill,
+            localLassoPoints: convertedPts,
+            origPoints: convertedOrigPts
+          });
+        });
+      }
+
+      // Re-parent children of secondary to primary so hierarchy stays unbroken
+      Object.values(objects).forEach(o => {
+        if (o.parentId === secondaryId) {
+          updateObject(o.id, { parentId: primary.id });
+          if (!newChildrenIds.includes(o.id)) {
+            newChildrenIds.push(o.id);
+          }
+        }
+      });
+
+      // Inherit parent if primary didn't have one
+      if (secondary.parentId && !primary.parentId && secondary.parentId !== primary.id) {
+        updateObject(primary.id, { parentId: secondary.parentId });
+      }
+
+      // Delete secondary object
       deleteObject(secondaryId);
     });
 
-    // Update primary with merged paths
+    // Unify all subpaths into single continuous point array with gap flags
+    const unifiedPoints = unifyStrokesToSinglePath(newSubPaths);
+
+    // Update primary object with merged data
     updateObject(primary.id, {
-      subPaths: newSubPaths
+      points: unifiedPoints,
+      subPaths: newSubPaths,
+      subPathStrokes: newSubPathStrokes,
+      subPathFills: newSubPathFills,
+      lassoFills: newLassoFills,
+      childrenIds: newChildrenIds,
+      isContinuousDrawing: true
     });
 
     // Reset local merge state
@@ -2375,30 +2527,18 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => {
-                        if (!selectedObject.isContinuousDrawing) {
-                          alert("Error: 'Edit / Resume Drawing' is only available for drawings originally made using the Continuous Drawing tool.");
-                          return;
-                        }
+                        updateObject(selectedObject.id, { isContinuousDrawing: true });
                         if (setContinuousDrawActive && setActiveContinuousDrawingId) {
                           setContinuousDrawActive(true);
                           setActiveContinuousDrawingId(selectedObject.id);
                         }
                       }}
-                      className={`w-full py-2 font-black uppercase text-xs rounded-xl tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                        selectedObject.isContinuousDrawing 
-                          ? 'bg-emerald-700 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/10'
-                          : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-700/50'
-                      }`}
-                      title={!selectedObject.isContinuousDrawing ? "Only available for drawings made with Continuous Drawing tool" : "Edit or resume drawing"}
+                      className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-black uppercase text-xs rounded-xl tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/10"
+                      title="Continue drawing or add strokes to this drawing"
                     >
                       <Feather className="w-3.5 h-3.5" />
                       Edit / Resume Drawing
                     </button>
-                    {!selectedObject.isContinuousDrawing && (
-                      <p className="text-[9px] text-rose-400 font-sans leading-normal font-semibold text-center mt-1">
-                        ⚠️ Only active for drawings made with Continuous Drawing
-                      </p>
-                    )}
                   </div>
                 )}
               </div>
@@ -5148,7 +5288,7 @@ export default function RightPanel({
                   )}
 
                   {/* CONVERT SELECTED DRAWING TO 3D PROXY */}
-                  {(selectedObject.type === 'stroke' || selectedObject.type === 'shape') && (
+                  {(selectedObject.type === 'stroke' || selectedObject.type === 'shape' || selectedObject.type === 'image') && (
                     <div className="bg-gradient-to-r from-amber-500/10 to-orange-500/10 p-4 rounded-2xl border border-amber-500/30 shadow-lg mt-3 space-y-2.5 animate-fade-in">
                       <div className="flex items-center gap-2">
                         <Box className="w-5 h-5 text-amber-400" />
@@ -5157,7 +5297,7 @@ export default function RightPanel({
                         </span>
                       </div>
                       <p className="text-[10px] text-neutral-300 leading-relaxed font-medium">
-                        Instantly convert this 2D vector drawing into a fully-functional <b>3D wireframe mesh</b> based on its outline coordinates!
+                        Instantly convert this 2D drawing or PNG image into a fully-functional <b>3D object mesh</b> based on its coordinates!
                       </p>
                       <button
                         type="button"
@@ -5170,7 +5310,7 @@ export default function RightPanel({
                   )}
 
                   {/* ✨ 2D TO 3D DRAWING EXTRUSION STUDIO */}
-                  {(selectedObject.type === 'stroke' || selectedObject.type === 'shape') && (
+                  {(selectedObject.type === 'stroke' || selectedObject.type === 'shape' || selectedObject.type === 'image') && (
                     <div className="bg-gradient-to-r from-indigo-500/10 to-purple-500/10 p-4 rounded-2xl border border-indigo-500/30 shadow-lg mt-3 space-y-3 animate-fade-in">
                       <div className="flex items-center justify-between border-b border-indigo-500/20 pb-2">
                         <div className="flex items-center gap-2">
@@ -5230,16 +5370,476 @@ export default function RightPanel({
 
                       {selectedObject.transform3D?.enabled && (
                         <div className="space-y-3.5 pt-2 animate-fade-in">
+                          {/* QUICK 3D STYLE PRESETS */}
+                          <div className="bg-neutral-900/80 p-2.5 rounded-xl border border-indigo-500/30 space-y-2">
+                            <span className="text-[9.5px] text-amber-400 font-extrabold uppercase tracking-wider block">
+                              ⚡ Instant 3D Presets
+                            </span>
+                            <div className="grid grid-cols-3 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateObject(selectedObject.id, {
+                                    autoFillInnerRegion: true,
+                                    fillGaps3D: true,
+                                    transform3D: {
+                                      ...selectedObject.transform3D!,
+                                      scaleX: 1, scaleY: 1, scaleZ: 1,
+                                      rotateX: 25, rotateY: -30, rotateZ: 0,
+                                      bevelProfile: 'flat',
+                                      extrusion: { depth: 60, segments: 1, bevel: 0 }
+                                    }
+                                  });
+                                }}
+                                className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-[9px] font-bold text-neutral-200 rounded-lg border border-neutral-700/60 transition text-center"
+                              >
+                                📦 Solid Block
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateObject(selectedObject.id, {
+                                    autoFillInnerRegion: true,
+                                    fillGaps3D: true,
+                                    transform3D: {
+                                      ...selectedObject.transform3D!,
+                                      scaleX: 1, scaleY: 1, scaleZ: 1.2,
+                                      rotateX: 30, rotateY: -25, rotateZ: 0,
+                                      bevelProfile: 'dome',
+                                      extrusion: { depth: 55, segments: 1, bevel: 0 }
+                                    }
+                                  });
+                                }}
+                                className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-[9px] font-bold text-neutral-200 rounded-lg border border-neutral-700/60 transition text-center"
+                              >
+                                🛡️ Dome Cushion
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateObject(selectedObject.id, {
+                                    autoFillInnerRegion: true,
+                                    fillGaps3D: true,
+                                    transform3D: {
+                                      ...selectedObject.transform3D!,
+                                      scaleX: 1, scaleY: 1, scaleZ: 1,
+                                      rotateX: 25, rotateY: -35, rotateZ: 0,
+                                      bevelProfile: 'taper',
+                                      extrusion: { depth: 75, segments: 1, bevel: 0 }
+                                    }
+                                  });
+                                }}
+                                className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-[9px] font-bold text-neutral-200 rounded-lg border border-neutral-700/60 transition text-center"
+                              >
+                                📐 Cone Taper
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateObject(selectedObject.id, {
+                                    autoFillInnerRegion: true,
+                                    fillGaps3D: true,
+                                    transform3D: {
+                                      ...selectedObject.transform3D!,
+                                      scaleX: 1, scaleY: 1, scaleZ: 1,
+                                      rotateX: 20, rotateY: -30, rotateZ: 0,
+                                      bevelProfile: 'bevel',
+                                      extrusion: { depth: 50, segments: 1, bevel: 0 }
+                                    }
+                                  });
+                                }}
+                                className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-[9px] font-bold text-neutral-200 rounded-lg border border-neutral-700/60 transition text-center"
+                              >
+                                🏛️ Chamfer Bevel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateObject(selectedObject.id, {
+                                    autoFillInnerRegion: true,
+                                    fillGaps3D: true,
+                                    transform3D: {
+                                      ...selectedObject.transform3D!,
+                                      scaleX: 1, scaleY: 1, scaleZ: 1,
+                                      rotateX: 35, rotateY: 45, rotateZ: 0,
+                                      perspective: 2000,
+                                      bevelProfile: 'flat',
+                                      extrusion: { depth: 35, segments: 1, bevel: 0 }
+                                    }
+                                  });
+                                }}
+                                className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-[9px] font-bold text-neutral-200 rounded-lg border border-neutral-700/60 transition text-center"
+                              >
+                                🎨 Isometric
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateObject(selectedObject.id, {
+                                    transform3D: {
+                                      ...selectedObject.transform3D!,
+                                      rotateX: 0, rotateY: 0, rotateZ: 0,
+                                      scaleX: 1, scaleY: 1, scaleZ: 1
+                                    }
+                                  });
+                                }}
+                                className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-[9px] font-bold text-indigo-300 rounded-lg border border-indigo-500/40 transition text-center"
+                              >
+                                🔄 Reset Angles
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 🕸️ WIREFRAME MESH & SUB-EXTRUSION STUDIO */}
+                          <div className="bg-amber-950/30 p-3 rounded-xl border border-amber-500/40 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] text-amber-400 font-extrabold uppercase tracking-wider flex items-center gap-1.5">
+                                <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                                Wireframe Vertices & Sub-3D
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nextWf = !selectedObject.wireframeMode;
+                                  updateObject(selectedObject.id, {
+                                    wireframeMode: nextWf,
+                                    selectedPointIndices: nextWf ? (selectedObject.selectedPointIndices || []) : []
+                                  });
+                                }}
+                                className={`px-2.5 py-1 text-[9px] font-black rounded-lg uppercase tracking-wider border transition ${
+                                  selectedObject.wireframeMode
+                                    ? 'bg-amber-500 text-neutral-950 border-amber-400 shadow-md shadow-amber-500/20'
+                                    : 'bg-neutral-800 text-amber-300 border-amber-500/30 hover:bg-neutral-700'
+                                }`}
+                              >
+                                {selectedObject.wireframeMode ? '🟢 Wireframe ON' : '🕸️ Enable Wireframe'}
+                              </button>
+                            </div>
+
+                            {selectedObject.wireframeMode && (
+                              <div className="space-y-2.5 pt-1 animate-fade-in">
+                                <div className="bg-neutral-900/90 p-2.5 rounded-lg border border-amber-500/20 text-[10px] space-y-2">
+                                  <div className="flex items-center justify-between text-neutral-200 font-bold">
+                                    <span>Selected Vertices:</span>
+                                    <span className="text-amber-400 font-black font-mono text-xs">
+                                      {(selectedObject.selectedPointIndices || []).length} / {selectedObject.points.length}
+                                    </span>
+                                  </div>
+                                  <p className="text-[9px] text-neutral-400 leading-tight">
+                                    Click vertices or use <b>Lasso Tool</b> on canvas to select drawing region points. Selected vertices turn <b>yellow</b>!
+                                  </p>
+                                  <div className="grid grid-cols-3 gap-1 pt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        updateObject(selectedObject.id, {
+                                          selectedPointIndices: selectedObject.points.map((_, i) => i)
+                                        });
+                                      }}
+                                      className="py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded text-[9px] font-bold border border-neutral-700"
+                                    >
+                                      Select All
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        updateObject(selectedObject.id, {
+                                          selectedPointIndices: []
+                                        });
+                                      }}
+                                      className="py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded text-[9px] font-bold border border-neutral-700"
+                                    >
+                                      Deselect
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const current = new Set(selectedObject.selectedPointIndices || []);
+                                        const inverted = selectedObject.points.map((_, i) => i).filter(i => !current.has(i));
+                                        updateObject(selectedObject.id, {
+                                          selectedPointIndices: inverted
+                                        });
+                                      }}
+                                      className="py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded text-[9px] font-bold border border-neutral-700"
+                                    >
+                                      Invert
+                                    </button>
+                                  </div>
+
+                                  {/* DONE SELECTION BUTTON */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if ((selectedObject.selectedPointIndices || []).length === 0) {
+                                        alert("Please select at least 2 vertices on the drawing first!");
+                                        return;
+                                      }
+                                      const subExtrusions = selectedObject.subExtrusions || [];
+                                      const newSub: SubExtrusion = {
+                                        id: `sub_${Date.now()}`,
+                                        name: `SubExtrude_${subExtrusions.length + 1}`,
+                                        pointIndices: [...selectedObject.selectedPointIndices!],
+                                        extrudeX: 0,
+                                        extrudeY: 0,
+                                        extrudeZ: 40,
+                                        scaleX: 1,
+                                        scaleY: 1,
+                                        scaleZ: 1,
+                                        rotateX: 0,
+                                        rotateY: 0,
+                                        rotateZ: 0,
+                                        color: selectedObject.fillColor && selectedObject.fillColor !== 'transparent' ? selectedObject.fillColor : (selectedObject.strokeColor || '#F59E0B')
+                                      };
+                                      updateObject(selectedObject.id, {
+                                        wireframeSelectionDone: true,
+                                        subExtrusions: [...subExtrusions, newSub],
+                                        activeSubExtrusionId: newSub.id
+                                      });
+                                    }}
+                                    className="w-full py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black uppercase text-xs rounded-lg shadow-md transition-all text-center tracking-wider cursor-pointer"
+                                  >
+                                    ✅ Done Selection (Apply 3D Extrusion)
+                                  </button>
+                                </div>
+
+                                {/* SUB-EXTRUSION & TRANSFORM CONTROLS */}
+                                {selectedObject.wireframeSelectionDone && selectedObject.subExtrusions && selectedObject.subExtrusions.length > 0 && (
+                                  <div className="bg-neutral-900/90 p-3 rounded-lg border border-amber-500/40 space-y-3">
+                                    {(() => {
+                                      const activeSubIdx = selectedObject.subExtrusions.findIndex(s => s.id === selectedObject.activeSubExtrusionId);
+                                      const activeSub = activeSubIdx !== -1 ? selectedObject.subExtrusions[activeSubIdx] : selectedObject.subExtrusions[selectedObject.subExtrusions.length - 1];
+                                      if (!activeSub) return null;
+
+                                      const updateActiveSub = (fieldChanges: Partial<SubExtrusion>) => {
+                                        const updatedSubs = selectedObject.subExtrusions!.map(s => {
+                                          if (s.id === activeSub.id) {
+                                            return { ...s, ...fieldChanges };
+                                          }
+                                          return s;
+                                        });
+                                        updateObject(selectedObject.id, { subExtrusions: updatedSubs });
+                                      };
+
+                                      return (
+                                        <div className="space-y-2.5">
+                                          <div className="flex items-center justify-between text-[10px] font-bold text-amber-300 border-b border-amber-500/20 pb-1.5">
+                                            <span>✨ Active 3D Part ({activeSub.pointIndices.length} Vertices)</span>
+                                            <span className="font-mono text-neutral-400">{activeSub.name}</span>
+                                          </div>
+
+                                          {/* Extrude Z (+Z, -Z depth) up to 2000px */}
+                                          <div className="space-y-1">
+                                            <div className="flex items-center justify-between text-[10px] text-neutral-300 font-bold">
+                                              <span>Extrude Z Axis (+Z / -Z)</span>
+                                              <span className="text-amber-400 font-mono">{activeSub.extrudeZ}px</span>
+                                            </div>
+                                            <input
+                                              type="range"
+                                              min="-500"
+                                              max="2000"
+                                              step="5"
+                                              value={activeSub.extrudeZ}
+                                              onChange={(e) => updateActiveSub({ extrudeZ: parseFloat(e.target.value) })}
+                                              className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                            />
+                                          </div>
+
+                                          {/* Extrude X & Y Shift up to 2000px */}
+                                          <div className="grid grid-cols-2 gap-2">
+                                            <div className="space-y-1">
+                                              <div className="flex items-center justify-between text-[9px] text-neutral-400">
+                                                <span>Shift X (+X / -X)</span>
+                                                <span className="text-amber-400 font-mono">{activeSub.extrudeX}px</span>
+                                              </div>
+                                              <input
+                                                type="range"
+                                                min="-1000"
+                                                max="1000"
+                                                step="5"
+                                                value={activeSub.extrudeX}
+                                                onChange={(e) => updateActiveSub({ extrudeX: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                            <div className="space-y-1">
+                                              <div className="flex items-center justify-between text-[9px] text-neutral-400">
+                                                <span>Shift Y (+Y / -Y)</span>
+                                                <span className="text-amber-400 font-mono">{activeSub.extrudeY}px</span>
+                                              </div>
+                                              <input
+                                                type="range"
+                                                min="-1000"
+                                                max="1000"
+                                                step="5"
+                                                value={activeSub.extrudeY}
+                                                onChange={(e) => updateActiveSub({ extrudeY: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                          </div>
+
+                                          {/* Scale X, Y, Z */}
+                                          <div className="grid grid-cols-3 gap-1.5 pt-1">
+                                            <div className="space-y-1">
+                                              <div className="text-[9px] text-neutral-400 text-center">Scale X ({activeSub.scaleX}x)</div>
+                                              <input
+                                                type="range"
+                                                min="0.1"
+                                                max="5"
+                                                step="0.1"
+                                                value={activeSub.scaleX}
+                                                onChange={(e) => updateActiveSub({ scaleX: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                            <div className="space-y-1">
+                                              <div className="text-[9px] text-neutral-400 text-center">Scale Y ({activeSub.scaleY}x)</div>
+                                              <input
+                                                type="range"
+                                                min="0.1"
+                                                max="5"
+                                                step="0.1"
+                                                value={activeSub.scaleY}
+                                                onChange={(e) => updateActiveSub({ scaleY: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                            <div className="space-y-1">
+                                              <div className="text-[9px] text-neutral-400 text-center">Scale Z ({activeSub.scaleZ}x)</div>
+                                              <input
+                                                type="range"
+                                                min="0.1"
+                                                max="5"
+                                                step="0.1"
+                                                value={activeSub.scaleZ}
+                                                onChange={(e) => updateActiveSub({ scaleZ: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                          </div>
+
+                                          {/* Rotate X, Y, Z */}
+                                          <div className="grid grid-cols-3 gap-1.5 pt-1">
+                                            <div className="space-y-1">
+                                              <div className="text-[9px] text-neutral-400 text-center">Rot X ({activeSub.rotateX}°)</div>
+                                              <input
+                                                type="range"
+                                                min="-180"
+                                                max="180"
+                                                step="5"
+                                                value={activeSub.rotateX}
+                                                onChange={(e) => updateActiveSub({ rotateX: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                            <div className="space-y-1">
+                                              <div className="text-[9px] text-neutral-400 text-center">Rot Y ({activeSub.rotateY}°)</div>
+                                              <input
+                                                type="range"
+                                                min="-180"
+                                                max="180"
+                                                step="5"
+                                                value={activeSub.rotateY}
+                                                onChange={(e) => updateActiveSub({ rotateY: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                            <div className="space-y-1">
+                                              <div className="text-[9px] text-neutral-400 text-center">Rot Z ({activeSub.rotateZ}°)</div>
+                                              <input
+                                                type="range"
+                                                min="-180"
+                                                max="180"
+                                                step="5"
+                                                value={activeSub.rotateZ}
+                                                onChange={(e) => updateActiveSub({ rotateZ: parseFloat(e.target.value) })}
+                                                className="w-full h-1 bg-neutral-950 rounded appearance-none accent-amber-500 cursor-pointer"
+                                              />
+                                            </div>
+                                          </div>
+
+                                          {/* Color for selected sub-region */}
+                                          <div className="flex items-center justify-between pt-1">
+                                            <span className="text-[10px] text-neutral-300 font-bold">Sub-Region Color</span>
+                                            <input
+                                              type="color"
+                                              value={activeSub.color || '#F59E0B'}
+                                              onChange={(e) => updateActiveSub({ color: e.target.value })}
+                                              className="w-7 h-6 rounded cursor-pointer bg-transparent border border-neutral-700"
+                                            />
+                                          </div>
+
+                                          {/* CHAINED SUB-EXTRUSION BUTTON */}
+                                          <div className="grid grid-cols-2 gap-1.5 pt-2 border-t border-neutral-800">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                const newChildSub: SubExtrusion = {
+                                                  id: `sub_${Date.now()}`,
+                                                  name: `Branch_${(activeSub.subExtrusions || []).length + 1}`,
+                                                  pointIndices: [...activeSub.pointIndices],
+                                                  extrudeX: 0,
+                                                  extrudeY: 0,
+                                                  extrudeZ: 40,
+                                                  scaleX: 1,
+                                                  scaleY: 1,
+                                                  scaleZ: 1,
+                                                  rotateX: 0,
+                                                  rotateY: 0,
+                                                  rotateZ: 0,
+                                                  color: activeSub.color || '#F59E0B'
+                                                };
+                                                const updatedSubExtrusions = selectedObject.subExtrusions!.map(s => {
+                                                  if (s.id === activeSub.id) {
+                                                    return {
+                                                      ...s,
+                                                      subExtrusions: [...(s.subExtrusions || []), newChildSub]
+                                                    };
+                                                  }
+                                                  return s;
+                                                });
+                                                updateObject(selectedObject.id, {
+                                                  subExtrusions: updatedSubExtrusions,
+                                                  activeSubExtrusionId: newChildSub.id
+                                                });
+                                              }}
+                                              className="py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[9.5px] rounded-lg border border-indigo-400/50 text-center transition cursor-pointer"
+                                            >
+                                              ➕ Chain Next Part
+                                            </button>
+
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                updateObject(selectedObject.id, {
+                                                  wireframeSelectionDone: false,
+                                                  selectedPointIndices: []
+                                                });
+                                              }}
+                                              className="py-1.5 bg-neutral-800 hover:bg-neutral-700 text-amber-300 font-bold text-[9.5px] rounded-lg border border-amber-500/30 text-center transition cursor-pointer"
+                                            >
+                                              🔄 New Vertices
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
                           {/* 1. GEOMETRY EXTRUSION & FOV */}
                           <div className="bg-neutral-900/60 p-3 rounded-xl border border-neutral-800/80 space-y-3">
                             <span className="text-[9.5px] text-indigo-400 font-extrabold uppercase tracking-wider block">
-                              📦 Mesh Geometry
+                              📦 Mesh Geometry & Bevel Curves
                             </span>
 
                             {/* Extrusion Depth */}
                             <div className="space-y-1">
                               <div className="flex items-center justify-between text-[10px] text-neutral-400">
-                                <span>Extrusion Depth</span>
+                                <span>Thickness / Extrusion Depth</span>
                                 <span className="text-indigo-400 font-bold font-mono">
                                   {selectedObject.transform3D.extrusion?.depth ?? 40}px
                                 </span>
@@ -5263,6 +5863,46 @@ export default function RightPanel({
                                 }}
                                 className="w-full accent-indigo-500 h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer"
                               />
+                            </div>
+
+                            {/* Blend Curve / Bevel Profile Selector */}
+                            <div className="space-y-1.5 pt-1">
+                              <span className="text-[10px] text-neutral-400 font-bold uppercase block">
+                                Blend Curve / Bevel Shape
+                              </span>
+                              <div className="grid grid-cols-3 gap-1">
+                                {[
+                                  { id: 'flat', label: 'Flat' },
+                                  { id: 'bevel', label: 'Bevel' },
+                                  { id: 'dome', label: 'Dome' },
+                                  { id: 'taper', label: 'Taper' },
+                                  { id: 'scurve', label: 'S-Curve' },
+                                  { id: 'hourglass', label: 'Hourglass' }
+                                ].map((prof) => {
+                                  const isSel = (selectedObject.transform3D?.bevelProfile || 'flat') === prof.id;
+                                  return (
+                                    <button
+                                      key={prof.id}
+                                      type="button"
+                                      onClick={() => {
+                                        updateObject(selectedObject.id, {
+                                          transform3D: {
+                                            ...selectedObject.transform3D!,
+                                            bevelProfile: prof.id as any
+                                          }
+                                        });
+                                      }}
+                                      className={`py-1 text-[9px] font-bold rounded-md border transition text-center ${
+                                        isSel
+                                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                                          : 'bg-neutral-800/80 text-neutral-400 border-neutral-700/60 hover:text-neutral-200'
+                                      }`}
+                                    >
+                                      {prof.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             </div>
 
                             {/* Perspective Field of View */}
@@ -5293,27 +5933,32 @@ export default function RightPanel({
                               />
                             </div>
 
-                            {/* Fill Gaps & Inner Area Toggle */}
+                            {/* Auto-Fill Inner Enclosed Region Toggle */}
                             <div className="flex items-center justify-between pt-1.5 border-t border-neutral-800/40">
-                              <span className="text-[10px] text-neutral-400 font-bold uppercase flex flex-col">
-                                <span>Fill Gaps & Inner Area</span>
-                                <span className="text-[8px] text-neutral-500 font-normal normal-case leading-tight">Closes and fills disjoint 3D regions</span>
+                              <span className="text-[10px] text-amber-300 font-bold uppercase flex flex-col">
+                                <span>✨ Auto-Fill Inner Region</span>
+                                <span className="text-[8px] text-neutral-400 font-normal normal-case leading-tight">Automatically fills enclosed path interior</span>
                               </span>
                               <button
-                                id="toggle-extrusion-fillgaps"
+                                id="toggle-extrusion-autofillinner"
+                                type="button"
                                 onClick={() => {
-                                  const newFillGaps = !selectedObject.fillGaps3D;
+                                  const newVal = !selectedObject.autoFillInnerRegion;
                                   updateObject(selectedObject.id, {
-                                    fillGaps3D: newFillGaps
+                                    autoFillInnerRegion: newVal,
+                                    fillGaps3D: newVal,
+                                    autoFillGaps: newVal,
+                                    fillGaps: newVal,
+                                    fillColor: newVal ? (selectedObject.fillColor && selectedObject.fillColor !== 'transparent' ? selectedObject.fillColor : (selectedObject.strokeColor || '#6366F1')) : selectedObject.fillColor
                                   });
                                 }}
                                 className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-200 focus:outline-none ${
-                                  selectedObject.fillGaps3D ? 'bg-indigo-500' : 'bg-neutral-800'
+                                  (selectedObject.autoFillInnerRegion || selectedObject.fillGaps3D) ? 'bg-amber-500' : 'bg-neutral-800'
                                 }`}
                               >
                                 <div
                                   className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                                    selectedObject.fillGaps3D ? 'translate-x-4' : 'translate-x-0'
+                                    (selectedObject.autoFillInnerRegion || selectedObject.fillGaps3D) ? 'translate-x-4' : 'translate-x-0'
                                   }`}
                                 />
                               </button>
@@ -5702,7 +6347,7 @@ export default function RightPanel({
                   )}
 
                   {/* 3D PROXY CONTROLLER MATRIX */}
-                  {selectedObject.type === '3d' && selectedObject.transform3D && (
+                  {(selectedObject.type === '3d' || selectedObject.transform3D?.enabled) && (
                     <div className="space-y-4 bg-amber-500/5 p-4 rounded-2xl border border-amber-400/20 shadow-lg shadow-black/20 mt-3 animate-fade-in">
                       <div className="flex items-center justify-between border-b border-amber-500/10 pb-2.5">
                         <span className="text-xs font-black uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
@@ -6571,7 +7216,24 @@ export default function RightPanel({
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => updateObject(selectedObject.id, { fillColor: 'transparent' })}
+                          onClick={() => {
+                            if (selectedObject) {
+                              const selectedSubMap = globalLassoSelectedMap[selectedObject.id]?.subPaths || {};
+                              if (Object.keys(selectedSubMap).length > 0) {
+                                const allSubs = extractAllSubPaths(selectedObject);
+                                const nextSubPathFills = { ...(selectedObject.subPathFills || {}) };
+                                Object.keys(selectedSubMap).forEach(subIdxStr => {
+                                  delete nextSubPathFills[parseInt(subIdxStr, 10)];
+                                });
+                                updateObject(selectedObject.id, {
+                                  subPaths: selectedObject.subPaths && selectedObject.subPaths.length > 0 ? selectedObject.subPaths : allSubs,
+                                  subPathFills: nextSubPathFills
+                                });
+                              } else {
+                                updateObject(selectedObject.id, { fillColor: 'transparent' });
+                              }
+                            }
+                          }}
                           className={`text-[9px] px-1.5 py-1 rounded font-bold border ${
                             selectedObject.fillColor === 'transparent'
                               ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
@@ -6584,13 +7246,47 @@ export default function RightPanel({
                           type="color"
                           disabled={selectedObject.fillColor === 'transparent'}
                           value={selectedObject.fillColor === 'transparent' ? '#ffffff' : (selectedObject.fillColor || '#ffffff')}
-                          onChange={(e) => updateObject(selectedObject.id, { fillColor: e.target.value })}
+                          onChange={(e) => {
+                            if (!selectedObject) return;
+                            const color = e.target.value;
+                            const selectedSubMap = globalLassoSelectedMap[selectedObject.id]?.subPaths || {};
+                            if (Object.keys(selectedSubMap).length > 0) {
+                              const allSubs = extractAllSubPaths(selectedObject);
+                              const nextSubPathFills = { ...(selectedObject.subPathFills || {}) };
+                              Object.keys(selectedSubMap).forEach(subIdxStr => {
+                                nextSubPathFills[parseInt(subIdxStr, 10)] = color;
+                              });
+                              updateObject(selectedObject.id, {
+                                subPaths: selectedObject.subPaths && selectedObject.subPaths.length > 0 ? selectedObject.subPaths : allSubs,
+                                subPathFills: nextSubPathFills
+                              });
+                            } else {
+                              updateObject(selectedObject.id, { fillColor: color });
+                            }
+                          }}
                           className="w-6 h-6 rounded cursor-pointer bg-transparent border-0 disabled:opacity-40"
                         />
                         <input
                           type="text"
                           value={selectedObject.fillColor || ''}
-                          onChange={(e) => updateObject(selectedObject.id, { fillColor: e.target.value })}
+                          onChange={(e) => {
+                            if (!selectedObject) return;
+                            const color = e.target.value;
+                            const selectedSubMap = globalLassoSelectedMap[selectedObject.id]?.subPaths || {};
+                            if (Object.keys(selectedSubMap).length > 0) {
+                              const allSubs = extractAllSubPaths(selectedObject);
+                              const nextSubPathFills = { ...(selectedObject.subPathFills || {}) };
+                              Object.keys(selectedSubMap).forEach(subIdxStr => {
+                                nextSubPathFills[parseInt(subIdxStr, 10)] = color;
+                              });
+                              updateObject(selectedObject.id, {
+                                subPaths: selectedObject.subPaths && selectedObject.subPaths.length > 0 ? selectedObject.subPaths : allSubs,
+                                subPathFills: nextSubPathFills
+                              });
+                            } else {
+                              updateObject(selectedObject.id, { fillColor: color });
+                            }
+                          }}
                           className="bg-neutral-950 border border-neutral-800 text-[10px] px-2 py-1 rounded text-white font-mono w-20 outline-none"
                         />
                       </div>
@@ -6602,7 +7298,23 @@ export default function RightPanel({
                         <button
                           key={color}
                           type="button"
-                          onClick={() => updateObject(selectedObject.id, { fillColor: color })}
+                          onClick={() => {
+                            if (!selectedObject) return;
+                            const selectedSubMap = globalLassoSelectedMap[selectedObject.id]?.subPaths || {};
+                            if (Object.keys(selectedSubMap).length > 0) {
+                              const allSubs = extractAllSubPaths(selectedObject);
+                              const nextSubPathFills = { ...(selectedObject.subPathFills || {}) };
+                              Object.keys(selectedSubMap).forEach(subIdxStr => {
+                                nextSubPathFills[parseInt(subIdxStr, 10)] = color;
+                              });
+                              updateObject(selectedObject.id, {
+                                subPaths: selectedObject.subPaths && selectedObject.subPaths.length > 0 ? selectedObject.subPaths : allSubs,
+                                subPathFills: nextSubPathFills
+                              });
+                            } else {
+                              updateObject(selectedObject.id, { fillColor: color });
+                            }
+                          }}
                           style={{ backgroundColor: color }}
                           className="w-4 h-4 rounded-full border border-neutral-700 hover:scale-110 active:scale-90 transition-transform"
                           title={`Set Fill to ${color}`}
@@ -6627,12 +7339,28 @@ export default function RightPanel({
                       <input
                         type="range"
                         min="1"
-                        max="120"
+                        max="500"
                         step="0.5"
                         value={selectedObject.strokeWidth || 5}
                         onChange={(e) => updateObject(selectedObject.id, { strokeWidth: parseFloat(e.target.value) })}
                         className="w-full h-1 bg-neutral-950 rounded-lg appearance-none cursor-pointer accent-amber-500"
                       />
+                      <div className="flex items-center gap-1 pt-1">
+                        {[2, 10, 30, 80, 150, 300, 500].map((w) => (
+                          <button
+                            key={w}
+                            type="button"
+                            onClick={() => updateObject(selectedObject.id, { strokeWidth: w })}
+                            className={`flex-1 py-0.5 text-[8.5px] font-mono font-bold rounded border ${
+                              selectedObject.strokeWidth === w
+                                ? 'bg-amber-500 text-neutral-950 border-amber-400'
+                                : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:text-neutral-200'
+                            }`}
+                          >
+                            {w}px
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     {/* Opacity Slider */}

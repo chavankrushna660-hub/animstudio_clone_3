@@ -45,8 +45,10 @@ import {
   saveUserAnimation, 
   getUserAnimation, 
   deleteUserAnimation, 
-  SavedAnimationRecord 
+  SavedAnimationRecord,
+  getSavedAnimationsQuotaStatus
 } from './utils/database';
+import SavedAnimationsModal from './components/SavedAnimationsModal';
 import { 
   generate3DGeometry, 
   getDailyLimitStatus, 
@@ -603,6 +605,7 @@ export default function App() {
     return localStorage.getItem('animastudio_current_user');
   });
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isSavedAnimationsModalOpen, setIsSavedAnimationsModalOpen] = useState(false);
   const [savedRecord, setSavedRecord] = useState<SavedAnimationRecord | null>(null);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -1099,6 +1102,24 @@ export default function App() {
     }
   };
 
+  const handleLoadProjectFromModal = (record: SavedAnimationRecord) => {
+    historyPush();
+    if (record.objects) setObjects(JSON.parse(JSON.stringify(record.objects)));
+    if (record.bones) setBones(JSON.parse(JSON.stringify(record.bones)));
+    if (record.frames) setFrames(JSON.parse(JSON.stringify(record.frames)));
+    if (record.layers) setLayers(JSON.parse(JSON.stringify(record.layers)));
+    if (record.fps) setFps(record.fps);
+    
+    setCurrentFrameIndex(0);
+    setSelectedObjectId(null);
+
+    setDbNotification({
+      type: 'success',
+      message: `Successfully loaded "${record.title}" into workspace!`
+    });
+    setTimeout(() => setDbNotification(null), 4000);
+  };
+
   const handleAuthSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -1592,24 +1613,54 @@ export default function App() {
         const origT = obj.transform;
         const newT = updates.transform;
 
-        const dX = (newT.x !== undefined ? newT.x : origT.x) - origT.x;
-        const dY = (newT.y !== undefined ? newT.y : origT.y) - origT.y;
-        const dRot = ((newT.rotation !== undefined ? newT.rotation : origT.rotation) ?? 0) - (origT.rotation ?? 0);
-        
-        const sXRatio = origT.scaleX !== 0 ? (newT.scaleX !== undefined ? newT.scaleX : origT.scaleX ?? 1) / origT.scaleX : 1;
-        const sYRatio = origT.scaleY !== 0 ? (newT.scaleY !== undefined ? newT.scaleY : origT.scaleY ?? 1) / origT.scaleY : 1;
-
         // Propagate recursively
         const propagate = (
           parentId: string,
-          deltaX: number,
-          deltaY: number,
-          deltaRot: number,
-          scaleXRatio: number,
-          scaleYRatio: number,
+          parentOrigT: Transform,
+          parentNewT: Transform,
           movedSet: Set<string> = new Set<string>()
         ) => {
           movedSet.add(parentId);
+
+          const parentObj = updated[parentId];
+          if (!parentObj) return;
+
+          const pPivot = parentObj.pivots?.[0] || { localX: 0, localY: 0 };
+          const oldParentPivotWorld = {
+            x: parentOrigT.x + pPivot.localX,
+            y: parentOrigT.y + pPivot.localY,
+          };
+          const newParentPivotWorld = {
+            x: parentNewT.x + pPivot.localX,
+            y: parentNewT.y + pPivot.localY,
+          };
+
+          // Scale factor changes
+          const sXRatio = parentOrigT.scaleX !== 0 ? (parentNewT.scaleX ?? 1) / parentOrigT.scaleX : 1;
+          const sYRatio = parentOrigT.scaleY !== 0 ? (parentNewT.scaleY ?? 1) / parentOrigT.scaleY : 1;
+
+          // 3D Pitch (rotateX) ratio for Y offset
+          const origRotXRad = ((parentOrigT.rotateX || 0) * Math.PI) / 180;
+          const newRotXRad = ((parentNewT.rotateX || 0) * Math.PI) / 180;
+          const cosOrigRotX = Math.cos(origRotXRad);
+          const cosNewRotX = Math.cos(newRotXRad);
+          const pitchScale = Math.abs(cosOrigRotX) > 1e-4 ? cosNewRotX / cosOrigRotX : 1;
+
+          // 3D Yaw (rotateY) ratio for X offset
+          const origRotYRad = ((parentOrigT.rotateY || 0) * Math.PI) / 180;
+          const newRotYRad = ((parentNewT.rotateY || 0) * Math.PI) / 180;
+          const cosOrigRotY = Math.cos(origRotYRad);
+          const cosNewRotY = Math.cos(newRotYRad);
+          const yawScale = Math.abs(cosOrigRotY) > 1e-4 ? cosNewRotY / cosOrigRotY : 1;
+
+          const deltaRot = (parentNewT.rotation ?? 0) - (parentOrigT.rotation ?? 0);
+          const dRotX = (parentNewT.rotateX ?? 0) - (parentOrigT.rotateX ?? 0);
+          const dRotY = (parentNewT.rotateY ?? 0) - (parentOrigT.rotateY ?? 0);
+          const dSkewX = (parentNewT.skewX ?? 0) - (parentOrigT.skewX ?? 0);
+          const dSkewY = (parentNewT.skewY ?? 0) - (parentOrigT.skewY ?? 0);
+          const dPersp = (parentNewT.perspective ?? 0) - (parentOrigT.perspective ?? 0);
+          const dCamX = (parentNewT.cameraAngleX ?? 0) - (parentOrigT.cameraAngleX ?? 0);
+          const dCamY = (parentNewT.cameraAngleY ?? 0) - (parentOrigT.cameraAngleY ?? 0);
 
           // Get direct child IDs
           const childIds = Object.keys(updated).filter(k => updated[k].parentId === parentId);
@@ -1621,66 +1672,37 @@ export default function App() {
             if (!child) continue;
 
             const childOrigT = { ...child.transform };
-            const childNewT = { ...child.transform };
 
-            // Rotate child position around parent's pivot
-            if (deltaRot !== 0) {
-              const parentObj = updated[parentId];
-              const pPivot = parentObj?.pivots?.[0] || { localX: 0, localY: 0 };
-              const parentJointWorld = localToWorld(
-                { x: pPivot.localX, y: pPivot.localY },
-                parentObj.transform,
-                pPivot
-              );
-              const childWorldPos = { x: childNewT.x, y: childNewT.y };
-              const rotatedChildWorldPos = rotatePoint(childWorldPos, deltaRot, parentJointWorld);
-              childNewT.x = Number(rotatedChildWorldPos.x.toFixed(2));
-              childNewT.y = Number(rotatedChildWorldPos.y.toFixed(2));
-              childNewT.rotation = Number(((childNewT.rotation ?? 0) + deltaRot).toFixed(2));
-            } else {
-              // Just translate
-              childNewT.x = Number((childNewT.x + deltaX).toFixed(2));
-              childNewT.y = Number((childNewT.y + deltaY).toFixed(2));
-            }
+            // Vector from old parent pivot to child old position
+            const vecX = childOrigT.x - oldParentPivotWorld.x;
+            const vecY = childOrigT.y - oldParentPivotWorld.y;
 
-            // Scale child's offset and scale factors
-            if (scaleXRatio !== 1 || scaleYRatio !== 1) {
-              const parentObj = updated[parentId];
-              const pPivot = parentObj?.pivots?.[0] || { localX: 0, localY: 0 };
-              const parentJointWorld = localToWorld(
-                { x: pPivot.localX, y: pPivot.localY },
-                parentObj.transform,
-                pPivot
-              );
-              const dx_c = childNewT.x - parentJointWorld.x;
-              const dy_c = childNewT.y - parentJointWorld.y;
-              childNewT.x = Number((parentJointWorld.x + dx_c * scaleXRatio).toFixed(2));
-              childNewT.y = Number((parentJointWorld.y + dy_c * scaleYRatio).toFixed(2));
-              childNewT.scaleX = Number(((childNewT.scaleX ?? 1) * scaleXRatio).toFixed(2));
-              childNewT.scaleY = Number(((childNewT.scaleY ?? 1) * scaleYRatio).toFixed(2));
-            }
+            // Scale vector (2D scale + 3D pitch/yaw squash)
+            const scaledVecX = vecX * sXRatio * yawScale;
+            const scaledVecY = vecY * sYRatio * pitchScale;
 
-            // Propagate Skew, RotateX, RotateY, Perspective if present
-            if (newT.skewX !== undefined) {
-              const dSkewX = (newT.skewX ?? 0) - (origT.skewX ?? 0);
-              childNewT.skewX = Number(((childNewT.skewX ?? 0) + dSkewX).toFixed(2));
-            }
-            if (newT.skewY !== undefined) {
-              const dSkewY = (newT.skewY ?? 0) - (origT.skewY ?? 0);
-              childNewT.skewY = Number(((childNewT.skewY ?? 0) + dSkewY).toFixed(2));
-            }
-            if (newT.rotateX !== undefined) {
-              const dRotX = (newT.rotateX ?? 0) - (origT.origX ?? origT.rotateX ?? 0);
-              childNewT.rotateX = Number(((childNewT.rotateX ?? 0) + dRotX).toFixed(2));
-            }
-            if (newT.rotateY !== undefined) {
-              const dRotY = (newT.rotateY ?? 0) - (origT.origY ?? origT.rotateY ?? 0);
-              childNewT.rotateY = Number(((childNewT.rotateY ?? 0) + dRotY).toFixed(2));
-            }
-            if (newT.perspective !== undefined) {
-              const dPersp = (newT.perspective ?? 0) - (origT.perspective ?? 0);
-              childNewT.perspective = Number(((childNewT.perspective ?? 0) + dPersp).toFixed(2));
-            }
+            // Rotate vector around origin by deltaRot
+            const rotatedVec = rotatePoint({ x: scaledVecX, y: scaledVecY }, deltaRot, { x: 0, y: 0 });
+
+            // Child new world position relative to new parent pivot
+            const childNewX = Number((newParentPivotWorld.x + rotatedVec.x).toFixed(2));
+            const childNewY = Number((newParentPivotWorld.y + rotatedVec.y).toFixed(2));
+
+            const childNewT: Transform = {
+              ...childOrigT,
+              x: childNewX,
+              y: childNewY,
+              rotation: Number(((childOrigT.rotation ?? 0) + deltaRot).toFixed(2)),
+              scaleX: Number(((childOrigT.scaleX ?? 1) * sXRatio * yawScale).toFixed(2)),
+              scaleY: Number(((childOrigT.scaleY ?? 1) * sYRatio * pitchScale).toFixed(2)),
+              rotateX: Number(((childOrigT.rotateX ?? 0) + dRotX).toFixed(2)),
+              rotateY: Number(((childOrigT.rotateY ?? 0) + dRotY).toFixed(2)),
+              skewX: Number(((childOrigT.skewX ?? 0) + dSkewX).toFixed(2)),
+              skewY: Number(((childOrigT.skewY ?? 0) + dSkewY).toFixed(2)),
+              perspective: Number(((childOrigT.perspective ?? 0) + dPersp).toFixed(2)),
+              cameraAngleX: Number(((childOrigT.cameraAngleX ?? 0) + dCamX).toFixed(2)),
+              cameraAngleY: Number(((childOrigT.cameraAngleY ?? 0) + dCamY).toFixed(2)),
+            };
 
             updated[childId] = {
               ...child,
@@ -1688,13 +1710,7 @@ export default function App() {
             };
 
             // Recursive propagation down the chain
-            const nextDX = childNewT.x - childOrigT.x;
-            const nextDY = childNewT.y - childOrigT.y;
-            const nextDRot = (childNewT.rotation ?? 0) - (childOrigT.rotation ?? 0);
-            const nextSXRatio = childOrigT.scaleX !== 0 ? (childNewT.scaleX ?? 1) / childOrigT.scaleX : 1;
-            const nextSYRatio = childOrigT.scaleY !== 0 ? (childNewT.scaleY ?? 1) / childOrigT.scaleY : 1;
-
-            propagate(childId, nextDX, nextDY, nextDRot, nextSXRatio, nextSYRatio, movedSet);
+            propagate(childId, childOrigT, childNewT, movedSet);
           }
         };
 
@@ -1702,6 +1718,9 @@ export default function App() {
         globalMovedSet.add(id);
 
         // 1. Instantly propagate translation for permanently attached sibling group
+        const dX = (newT.x !== undefined ? newT.x : origT.x) - origT.x;
+        const dY = (newT.y !== undefined ? newT.y : origT.y) - origT.y;
+
         if (obj.attachedGroupId && (dX !== 0 || dY !== 0)) {
           Object.keys(updated).forEach(k => {
             if (k !== id && updated[k].attachedGroupId === obj.attachedGroupId) {
@@ -1719,13 +1738,13 @@ export default function App() {
               globalMovedSet.add(k);
 
               // Propagate hierarchical transformations down from each sibling
-              propagate(k, dX, dY, 0, 1, 1, globalMovedSet);
+              propagate(k, siblingOrigT, siblingNewT, globalMovedSet);
             }
           });
         }
 
         // 2. Propagate parent-child hierarchies from the modified object
-        propagate(id, dX, dY, dRot, sXRatio, sYRatio, globalMovedSet);
+        propagate(id, origT, newT, globalMovedSet);
       }
 
       return updated;
@@ -2597,13 +2616,13 @@ export default function App() {
     setSelectedObjectId(modelId);
   };
 
-  // Convert 2D Vector Drawing instantly into a real 3D solid wireframe geometry prism
+  // Convert 2D Vector Drawing or PNG Image instantly into a real 3D solid wireframe geometry prism
   const convertTo3D = (id: string) => {
     const obj = objects[id];
     if (!obj) return;
 
-    if (obj.type !== 'stroke' && obj.type !== 'shape') {
-      alert("Please select a 2D drawing or shape to convert.");
+    if (obj.type !== 'stroke' && obj.type !== 'shape' && obj.type !== 'image') {
+      alert("Please select a 2D drawing, shape, or PNG image to convert.");
       return;
     }
 
@@ -2617,9 +2636,22 @@ export default function App() {
     historyPush();
     incrementDailyLimit(email);
 
+    let pointsToExtrude = obj.points;
+    if ((obj.type === 'image' || obj.imageUrl) && (!pointsToExtrude || pointsToExtrude.length < 2)) {
+      const w = obj.transform?.width || 200;
+      const h = obj.transform?.height || 200;
+      pointsToExtrude = [
+        { x: -w / 2, y: -h / 2 },
+        { x: w / 2, y: -h / 2 },
+        { x: w / 2, y: h / 2 },
+        { x: -w / 2, y: h / 2 },
+        { x: -w / 2, y: -h / 2 }
+      ];
+    }
+
     // Run extrusion algorithm
     const result = extrude2DTo3D(
-      obj.points,
+      pointsToExtrude,
       obj.fillColor,
       obj.strokeColor,
       40,
@@ -3192,6 +3224,21 @@ export default function App() {
               <span className="inline">REC</span>
             </button>
           )}
+
+          <div className="w-[1px] h-6 bg-neutral-800 mx-0.5 shrink-0"></div>
+
+          {/* Database Storage Quota Trigger */}
+          <button
+            onClick={() => setIsSavedAnimationsModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-bold text-[9px] sm:text-xs transition-all cursor-pointer select-none shrink-0"
+            title="Open Saved Animations Database (Max 10 Quota)"
+          >
+            <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="hidden md:inline uppercase tracking-wider text-[10px] font-black">Saved Database</span>
+            <span className="bg-amber-500/20 px-1.5 py-0.5 rounded text-[9px] font-mono font-black text-amber-300">
+              {getSavedAnimationsQuotaStatus(currentUser || 'guest').count}/10
+            </span>
+          </button>
 
           <div className="w-[1px] h-6 bg-neutral-800 mx-0.5 shrink-0"></div>
 
@@ -3776,6 +3823,24 @@ export default function App() {
 
       </div>
       
+      <SavedAnimationsModal
+        isOpen={isSavedAnimationsModalOpen}
+        onClose={() => setIsSavedAnimationsModalOpen(false)}
+        currentUser={currentUser}
+        currentProjectData={{
+          fps,
+          layers,
+          objects,
+          frames,
+          bones
+        }}
+        onLoadProject={handleLoadProjectFromModal}
+        onNotification={(msg) => {
+          setDbNotification(msg);
+          setTimeout(() => setDbNotification(null), 4000);
+        }}
+      />
+
       <CustomDialog config={dialogConfig} />
     </div>
   );

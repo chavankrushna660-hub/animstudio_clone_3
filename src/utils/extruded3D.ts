@@ -1,5 +1,5 @@
 import { Point, VectorObject } from '../types';
-import { localToWorld } from './math';
+import { localToWorld, extractAllSubPaths } from './math';
 
 export class Math3D {
     // Degree to Radian conversion
@@ -43,12 +43,42 @@ export class Math3D {
         };
     }
     
+    // Get 3x3 rotation matrix for fast batch transformations
+    static getRotationMatrix(rx: number, ry: number, rz: number) {
+        const radX = (rx * Math.PI) / 180;
+        const radY = (ry * Math.PI) / 180;
+        const radZ = (rz * Math.PI) / 180;
+
+        const cx = Math.cos(radX), sx = Math.sin(radX);
+        const cy = Math.cos(radY), sy = Math.sin(radY);
+        const cz = Math.cos(radZ), sz = Math.sin(radZ);
+
+        return {
+            m00: cz * cy,
+            m01: cz * sy * sx - sz * cx,
+            m02: cz * sy * cx + sz * sx,
+            m10: sz * cy,
+            m11: sz * sy * sx + cz * cx,
+            m12: sz * sy * cx - cz * sx,
+            m20: -sy,
+            m21: cy * sx,
+            m22: cy * cx
+        };
+    }
+
+    // Apply 3x3 matrix rotation
+    static applyMatrix(point: { x: number; y: number; z: number }, m: ReturnType<typeof Math3D.getRotationMatrix>): { x: number; y: number; z: number } {
+        return {
+            x: point.x * m.m00 + point.y * m.m01 + point.z * m.m02,
+            y: point.x * m.m10 + point.y * m.m11 + point.z * m.m12,
+            z: point.x * m.m20 + point.y * m.m21 + point.z * m.m22
+        };
+    }
+
     // Apply all rotations (order: Z -> Y -> X)
     static applyRotation(point: { x: number; y: number; z: number }, rx: number, ry: number, rz: number): { x: number; y: number; z: number } {
-        let p = this.rotateZ(point, rz);
-        p = this.rotateY(p, ry);
-        p = this.rotateX(p, rx);
-        return p;
+        const m = this.getRotationMatrix(rx, ry, rz);
+        return this.applyMatrix(point, m);
     }
     
     // Apply scale
@@ -199,6 +229,56 @@ export class ExtrusionGenerator {
     }
 }
 
+const drawTexturedTriangle = (
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  u0: number, v0: number,
+  u1: number, v1: number,
+  u2: number, v2: number,
+  x0: number, y0: number,
+  x1: number, y1: number,
+  x2: number, y2: number
+) => {
+  const cx = (x0 + x1 + x2) / 3;
+  const cy = (y0 + y1 + y2) / 3;
+  const expand = 0.5;
+
+  let dx0 = x0 - cx; let dy0 = y0 - cy;
+  let len0 = Math.sqrt(dx0 * dx0 + dy0 * dy0);
+  if (len0 > 0) { x0 += (dx0 / len0) * expand; y0 += (dy0 / len0) * expand; }
+
+  let dx1 = x1 - cx; let dy1 = y1 - cy;
+  let len1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+  if (len1 > 0) { x1 += (dx1 / len1) * expand; y1 += (dy1 / len1) * expand; }
+
+  let dx2 = x2 - cx; let dy2 = y2 - cy;
+  let len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+  if (len2 > 0) { x2 += (dx2 / len2) * expand; y2 += (dy2 / len2) * expand; }
+
+  const delta = u0 * (v1 - v2) + u1 * (v2 - v0) + u2 * (v0 - v1);
+  if (Math.abs(delta) < 0.0001) return;
+
+  const a = (x0 * (v1 - v2) + x1 * (v2 - v0) + x2 * (v0 - v1)) / delta;
+  const c = (x0 * (u2 - u1) + x1 * (u0 - u2) + x2 * (u1 - u0)) / delta;
+  const e = (x0 * (u1 * v2 - u2 * v1) + x1 * (u2 * v0 - u0 * v2) + x2 * (u0 * v1 - u1 * v0)) / delta;
+
+  const b = (y0 * (v1 - v2) + y1 * (v2 - v0) + y2 * (v0 - v1)) / delta;
+  const d = (y0 * (u2 - u1) + y1 * (u0 - u2) + y2 * (u1 - u0)) / delta;
+  const f = (y0 * (u1 * v2 - u2 * v1) + y1 * (u2 * v0 - u0 * v2) + y2 * (u0 * v1 - u1 * v0)) / delta;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.closePath();
+  ctx.clip();
+
+  ctx.transform(a, b, c, d, e, f);
+  ctx.drawImage(img, 0, 0);
+  ctx.restore();
+};
+
 export class Renderer3D {
     
     static render(drawing: VectorObject, ctx: CanvasRenderingContext2D) {
@@ -209,13 +289,26 @@ export class Renderer3D {
             return;
         }
         
-        if (drawing.points.length < 2) {
-            this.render2D(drawing, ctx);
-            return;
+        let renderingPoints = drawing.points;
+        if (!renderingPoints || renderingPoints.length < 2) {
+            if (drawing.imageUrl || drawing.type === 'image') {
+                const w = drawing.transform?.width || 200;
+                const h = drawing.transform?.height || 200;
+                renderingPoints = [
+                    { x: -w / 2, y: -h / 2 },
+                    { x: w / 2, y: -h / 2 },
+                    { x: w / 2, y: h / 2 },
+                    { x: -w / 2, y: h / 2 },
+                    { x: -w / 2, y: -h / 2 }
+                ];
+            } else {
+                this.render2D(drawing, ctx);
+                return;
+            }
         }
         
         // 1. Calculate drawing center (for rotation pivot)
-        const center = ExtrusionGenerator.calculateCenter(drawing.points);
+        const center = ExtrusionGenerator.calculateCenter(renderingPoints);
         
         const scaleX = t3d.scaleX ?? 1;
         const scaleY = t3d.scaleY ?? 1;
@@ -225,69 +318,82 @@ export class Renderer3D {
         const rotateZ = t3d.rotateZ ?? 0;
         const translateZ = t3d.translateZ ?? 0;
         const perspective = t3d.perspective ?? 800;
+        const bevelProfile = (t3d as any).bevelProfile ?? 'flat';
         
         const extrusionDepth = t3d.extrusion?.depth ?? 40;
         const totalDepth = extrusionDepth * scaleZ;
         
         const pivot = drawing.pivots[0] || { localX: 0, localY: 0 };
+        const rotMatrix = Math3D.getRotationMatrix(rotateX, rotateY, rotateZ);
         
-        // Function to project a point at a given Z level
-        const projectPointAtZ = (p: Point, z: number) => {
-            const local = {
-                x: p.x - center.x,
-                y: p.y - center.y,
-                z: z
-            };
+        // Function to project a point at a given Z level with depth progress (0 to 1)
+        const projectPointAtZ = (p: Point, z: number, depthProgress: number = 0.5) => {
+            // Compute blend curve / bevel factor along extrusion depth
+            let bevelFactor = 1.0;
+            if (bevelProfile === 'bevel') {
+                const edgeDist = Math.min(depthProgress, 1 - depthProgress);
+                bevelFactor = 0.8 + 0.4 * Math.min(1, edgeDist * 4);
+            } else if (bevelProfile === 'dome') {
+                bevelFactor = 0.35 + 0.65 * Math.sin(depthProgress * Math.PI);
+            } else if (bevelProfile === 'taper') {
+                bevelFactor = 0.25 + 0.75 * depthProgress;
+            } else if (bevelProfile === 'scurve') {
+                bevelFactor = 0.5 + 0.5 * Math.sin((depthProgress - 0.5) * Math.PI);
+            } else if (bevelProfile === 'hourglass') {
+                bevelFactor = 0.7 + 0.3 * Math.cos(depthProgress * Math.PI * 2);
+            }
             
-            // Apply scale
-            let scaled = Math3D.applyScale(local, scaleX, scaleY, 1);
+            const lx = (p.x - center.x) * scaleX * bevelFactor;
+            const ly = (p.y - center.y) * scaleY * bevelFactor;
+            const lz = z * scaleZ;
+
+            const rx = lx * rotMatrix.m00 + ly * rotMatrix.m01 + lz * rotMatrix.m02;
+            const ry = lx * rotMatrix.m10 + ly * rotMatrix.m11 + lz * rotMatrix.m12;
+            const rz = lx * rotMatrix.m20 + ly * rotMatrix.m21 + lz * rotMatrix.m22 + translateZ;
             
-            // Apply rotation (around local center)
-            let rotated = Math3D.applyRotation(scaled, rotateX, rotateY, rotateZ);
-            
-            // Apply Z translation
-            rotated.z += translateZ;
-            
-            // Perspective projection
-            const proj = Math3D.project(rotated, perspective, center.x, center.y);
+            const scale = perspective / Math.max(1, perspective + rz);
+            const projX = center.x + rx * scale;
+            const projY = center.y + ry * scale;
             
             // Transform to world coordinates using drawing's main transform
-            const worldP = localToWorld(proj, drawing.transform, pivot);
+            const worldP = localToWorld({ x: projX, y: projY }, drawing.transform, pivot);
             return {
                 x: worldP.x,
                 y: worldP.y,
-                scale: proj.scale,
-                z: proj.z
+                scale: scale,
+                z: rz
             };
         };
         
         // Determine draw direction:
         // Project center at back (z = depth/2) and front (z = -depth/2)
-        const testFrontZ = projectPointAtZ(center, -totalDepth / 2).z;
-        const testBackZ = projectPointAtZ(center, totalDepth / 2).z;
+        const testFrontZ = projectPointAtZ(center, -totalDepth / 2, 1).z;
+        const testBackZ = projectPointAtZ(center, totalDepth / 2, 0).z;
         
         // Lower Z is closer (larger perspective scale). So we start rendering from the back (farthest) to the front (closest).
         const isFrontInFront = testFrontZ < testBackZ;
         const startZ = isFrontInFront ? totalDepth / 2 : -totalDepth / 2;
         const endZ = isFrontInFront ? -totalDepth / 2 : totalDepth / 2;
         
-        // Step size for extrusion layers (1.5px step is extremely smooth and efficient)
-        const steps = Math.max(1, Math.ceil(totalDepth / 1.5));
-        const stepDelta = (endZ - startZ) / steps;
-        
-        // Colors from workbench - preserve exact colors
-        const defaultFrontColor = drawing.fillColor && drawing.fillColor !== 'transparent' ? drawing.fillColor : (drawing.strokeColor || '#6366F1');
-        const defaultSidesColor = drawing.strokeColor || '#4338CA';
+        // Colors from workbench - smart auto-derivation if not explicitly set
+        const hasFill = (drawing.fillColor && drawing.fillColor !== 'transparent') || (drawing.subPathFills && Object.keys(drawing.subPathFills).length > 0);
+        const baseColor = drawing.fillColor && drawing.fillColor !== 'transparent'
+            ? drawing.fillColor
+            : (drawing.strokeColor && drawing.strokeColor !== 'transparent' ? drawing.strokeColor : '#6366F1');
+
+        const defaultFrontColor = baseColor;
+        const defaultSidesColor = hasFill ? this.applyLighting(baseColor, 0.75) : (drawing.strokeColor || '#4338CA');
+        const defaultBackColor = hasFill ? this.applyLighting(baseColor, 0.5) : this.applyLighting(defaultSidesColor, 0.65);
         
         const frontColorObj = t3d.faces?.front ?? { color: defaultFrontColor, opacity: 1.0, visible: true };
         const sidesColorObj = t3d.faces?.sides ?? { color: defaultSidesColor, opacity: 1.0, visible: true };
-        const backColorObj = t3d.faces?.back ?? { color: defaultSidesColor, opacity: 1.0, visible: true };
+        const backColorObj = t3d.faces?.back ?? { color: defaultBackColor, opacity: 1.0, visible: true };
         
         ctx.save();
         ctx.lineCap = drawing.strokeWidth > 3 ? 'round' : 'butt';
         ctx.lineJoin = 'round';
 
-        // Extract disjoint segments if fillGaps3D is false (or undefined)
+        // Extract disjoint segments and subPaths
         const segments: Point[][] = [];
         if (!drawing.fillGaps3D && drawing.points.some(p => p.gap)) {
             let currentSegment: Point[] = [];
@@ -302,105 +408,410 @@ export class Renderer3D {
             if (currentSegment.length > 0) {
                 segments.push(currentSegment);
             }
-        } else {
+        } else if (drawing.points.length > 0) {
             segments.push(drawing.points);
         }
-        
-        // Draw the back face / back layer first if visible and not the same as sides
+
+        if (drawing.subPaths && drawing.subPaths.length > 0) {
+            drawing.subPaths.forEach(sub => {
+                if (sub.length > 0) {
+                    segments.push(sub);
+                }
+            });
+        }
+
+        // Closed path check & auto-fill inner region determination
+        const isClosedSeg = (pts: Point[]) => {
+            if (pts.length < 3) return false;
+            const f = pts[0];
+            const l = pts[pts.length - 1];
+            return Math.hypot(l.x - f.x, l.y - f.y) < 15;
+        };
+
+        const shouldFillInterior = 
+            (drawing as any).autoFillInnerRegion ||
+            drawing.autoFillGaps ||
+            drawing.fillGaps ||
+            drawing.fillGaps3D ||
+            drawing.type === 'shape' ||
+            (drawing.fillColor && drawing.fillColor !== 'transparent') ||
+            segments.some(isClosedSeg);
+
+        // Draw back face
         if (backColorObj.visible && totalDepth > 2) {
             ctx.beginPath();
             segments.forEach(seg => {
-                const backPoints = seg.map(p => projectPointAtZ(p, startZ));
+                const backPoints = seg.map(p => projectPointAtZ(p, startZ, 0));
                 backPoints.forEach((pt, idx) => {
                     if (idx === 0) ctx.moveTo(pt.x, pt.y);
                     else ctx.lineTo(pt.x, pt.y);
                 });
-                if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
+                if (shouldFillInterior) {
                     ctx.closePath();
                 }
             });
             
-            if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
+            if (shouldFillInterior) {
                 ctx.fillStyle = backColorObj.color;
                 ctx.globalAlpha = backColorObj.opacity * (drawing.opacity ?? 1.0);
-                ctx.fill();
+                ctx.fill('evenodd');
             }
             
-            const allBackPoints = drawing.points.map(p => projectPointAtZ(p, startZ));
-            const avgScale = allBackPoints.reduce((sum, pt) => sum + pt.scale, 0) / allBackPoints.length;
+            const allBackPoints = drawing.points.map(p => projectPointAtZ(p, startZ, 0));
+            const avgScale = allBackPoints.reduce((sum, pt) => sum + pt.scale, 0) / (allBackPoints.length || 1);
             ctx.strokeStyle = backColorObj.color;
             ctx.lineWidth = (drawing.strokeWidth ?? 2) * avgScale;
             ctx.globalAlpha = backColorObj.opacity * (drawing.opacity ?? 1.0);
             ctx.stroke();
         }
         
-        // Draw extrusion side layers
+        // Draw extrusion side layers using seamless quad surfaces (NO repeating wireframe ring strokes)
         if (sidesColorObj.visible && totalDepth > 1) {
-            for (let i = 0; i < steps; i++) {
+            const steps = Math.min(10, Math.max(1, Math.ceil(totalDepth / 8)));
+            const stepDelta = (endZ - startZ) / steps;
+
+            const ringSteps: { x: number; y: number; scale: number; z: number }[][][] = [];
+            for (let i = 0; i <= steps; i++) {
+                const depthPct = i / steps;
                 const currentZ = startZ + i * stepDelta;
-                
-                ctx.beginPath();
+                const stepRings: { x: number; y: number; scale: number; z: number }[][] = [];
                 segments.forEach(seg => {
-                    const projectedPoints = seg.map(p => projectPointAtZ(p, currentZ));
-                    projectedPoints.forEach((pt, idx) => {
-                        if (idx === 0) ctx.moveTo(pt.x, pt.y);
-                        else ctx.lineTo(pt.x, pt.y);
-                    });
-                    if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
+                    stepRings.push(seg.map(p => projectPointAtZ(p, currentZ, depthPct)));
+                });
+                ringSteps.push(stepRings);
+            }
+
+            ctx.save();
+            ctx.globalAlpha = sidesColorObj.opacity * (drawing.opacity ?? 1.0);
+
+            for (let i = 0; i < steps; i++) {
+                const depthPct = (i + 0.5) / steps;
+                const brightness = 0.45 + 0.55 * depthPct;
+                const litColor = this.applyLighting(sidesColorObj.color, brightness);
+
+                segments.forEach((seg, segIdx) => {
+                    const ringA = ringSteps[i][segIdx];
+                    const ringB = ringSteps[i + 1][segIdx];
+                    if (!ringA || !ringB || ringA.length < 2) return;
+
+                    const isClosed = isClosedSeg(seg);
+                    const quadCount = isClosed ? ringA.length : ringA.length - 1;
+
+                    for (let j = 0; j < quadCount; j++) {
+                        const nextJ = (j + 1) % ringA.length;
+                        const p0 = ringA[j];
+                        const p1 = ringA[nextJ];
+                        const p2 = ringB[nextJ];
+                        const p3 = ringB[j];
+
+                        ctx.beginPath();
+                        ctx.moveTo(p0.x, p0.y);
+                        ctx.lineTo(p1.x, p1.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.lineTo(p3.x, p3.y);
                         ctx.closePath();
+
+                        ctx.fillStyle = litColor;
+                        ctx.fill();
+
+                        if (t3d.wireframe) {
+                            ctx.strokeStyle = (drawing.strokeColor && drawing.strokeColor !== 'transparent') ? drawing.strokeColor : '#000000';
+                            ctx.lineWidth = 1;
+                            ctx.stroke();
+                        } else {
+                            // Subtle anti-aliasing fill line between quads (prevents transparent seam artifacts)
+                            ctx.strokeStyle = litColor;
+                            ctx.lineWidth = 0.5;
+                            ctx.stroke();
+                        }
                     }
                 });
-                
-                // For sides, calculate dynamic lighting brightness based on rotation to add realistic 3D depth
-                const depthPct = i / steps;
-                // Darken slightly towards the back to create shading depth
-                const brightness = 0.5 + 0.5 * depthPct;
-                const litColor = this.applyLighting(sidesColorObj.color, brightness);
-                
-                if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
-                    ctx.fillStyle = litColor;
-                    ctx.globalAlpha = sidesColorObj.opacity * (drawing.opacity ?? 1.0);
-                    ctx.fill();
-                }
-                
-                const allProjectedPoints = drawing.points.map(p => projectPointAtZ(p, currentZ));
-                const avgScale = allProjectedPoints.reduce((sum, pt) => sum + pt.scale, 0) / allProjectedPoints.length;
-                ctx.strokeStyle = litColor;
+            }
+            ctx.restore();
+
+            // Draw clean longitudinal outline edge connectors (connecting Back to Front)
+            if (!t3d.wireframe && drawing.strokeColor && drawing.strokeColor !== 'transparent') {
+                ctx.save();
+                const allFrontPoints = drawing.points.map(p => projectPointAtZ(p, endZ, 1));
+                const avgScale = allFrontPoints.reduce((sum, pt) => sum + pt.scale, 0) / (allFrontPoints.length || 1);
+                ctx.strokeStyle = drawing.strokeColor;
                 ctx.lineWidth = (drawing.strokeWidth ?? 2) * avgScale;
-                ctx.globalAlpha = sidesColorObj.opacity * (drawing.opacity ?? 1.0);
-                ctx.stroke();
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.globalAlpha = (drawing.opacity ?? 1.0);
+
+                segments.forEach((seg, segIdx) => {
+                    const backRing = ringSteps[0][segIdx];
+                    const frontRing = ringSteps[steps][segIdx];
+                    if (!backRing || !frontRing) return;
+
+                    const isClosed = isClosedSeg(seg);
+                    const stepJump = Math.max(1, Math.floor(seg.length / 10));
+
+                    for (let j = 0; j < seg.length; j++) {
+                        const isEndpoint = !isClosed && (j === 0 || j === seg.length - 1);
+                        let isCorner = false;
+                        if (j > 0 && j < seg.length - 1) {
+                            const prev = seg[j - 1];
+                            const curr = seg[j];
+                            const next = seg[j + 1];
+                            const v1 = { x: curr.x - prev.x, y: curr.y - prev.y };
+                            const v2 = { x: next.x - curr.x, y: next.y - curr.y };
+                            const dot = v1.x * v2.x + v1.y * v2.y;
+                            const len1 = Math.hypot(v1.x, v1.y);
+                            const len2 = Math.hypot(v2.x, v2.y);
+                            if (len1 > 0.1 && len2 > 0.1 && (dot / (len1 * len2)) < 0.85) {
+                                isCorner = true;
+                            }
+                        }
+
+                        if (isEndpoint || isCorner || (j % stepJump === 0 && seg.length <= 16)) {
+                            const pBack = backRing[j];
+                            const pFront = frontRing[j];
+                            if (pBack && pFront) {
+                                ctx.beginPath();
+                                ctx.moveTo(pBack.x, pBack.y);
+                                ctx.lineTo(pFront.x, pFront.y);
+                                ctx.stroke();
+                            }
+                        }
+                    }
+                });
+                ctx.restore();
             }
         }
         
-        // Draw the main front face on top
+        // Draw front face
         if (frontColorObj.visible) {
+            // Draw 3D Front Face Image Texture (e.g. uploaded PNG / background removed PNG)
+            if (drawing.imageUrl || drawing.type === 'image') {
+                let img = (drawing as any)._cachedImg;
+                if (!img && drawing.imageUrl) {
+                    img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = drawing.imageUrl;
+                    (drawing as any)._cachedImg = img;
+                }
+
+                if (img && img.complete && img.naturalWidth > 0 && renderingPoints.length >= 4) {
+                    const fp0 = projectPointAtZ(renderingPoints[0], endZ, 1);
+                    const fp1 = projectPointAtZ(renderingPoints[1], endZ, 1);
+                    const fp2 = projectPointAtZ(renderingPoints[2], endZ, 1);
+                    const fp3 = projectPointAtZ(renderingPoints[3], endZ, 1);
+
+                    ctx.save();
+                    ctx.globalAlpha = (drawing.opacity ?? 1.0);
+
+                    drawTexturedTriangle(
+                        ctx, img,
+                        0, 0,
+                        img.naturalWidth, 0,
+                        0, img.naturalHeight,
+                        fp0.x, fp0.y,
+                        fp1.x, fp1.y,
+                        fp3.x, fp3.y
+                    );
+
+                    drawTexturedTriangle(
+                        ctx, img,
+                        img.naturalWidth, 0,
+                        img.naturalWidth, img.naturalHeight,
+                        0, img.naturalHeight,
+                        fp1.x, fp1.y,
+                        fp2.x, fp2.y,
+                        fp3.x, fp3.y
+                    );
+
+                    ctx.restore();
+                }
+            }
+
+            const subPathsToRender = (drawing.subPaths && drawing.subPaths.length > 0) ? drawing.subPaths : extractAllSubPaths(drawing);
+            const frontFillsToRender = subPathsToRender.length > 0 ? subPathsToRender : segments;
+
+            if (shouldFillInterior) {
+                frontFillsToRender.forEach((sub, subIdx) => {
+                    const frontPoints = sub.map(p => projectPointAtZ(p, endZ, 1));
+                    if (frontPoints.length >= 3) {
+                        ctx.save();
+                        ctx.beginPath();
+                        frontPoints.forEach((pt, idx) => {
+                            if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                            else ctx.lineTo(pt.x, pt.y);
+                        });
+                        ctx.closePath();
+                        const subColor = drawing.subPathFills?.[subIdx] || frontColorObj.color;
+                        ctx.fillStyle = subColor;
+                        ctx.globalAlpha = frontColorObj.opacity * (drawing.opacity ?? 1.0);
+                        ctx.fill('evenodd');
+                        ctx.restore();
+                    }
+                });
+            }
+
+            // Render subPathFills on 3D front face (if not already handled)
+            if (drawing.subPathFills && Object.keys(drawing.subPathFills).length > 0 && !shouldFillInterior) {
+                Object.entries(drawing.subPathFills).forEach(([subIdxStr, subColor]) => {
+                    const subIdx = parseInt(subIdxStr, 10);
+                    const sub = subPathsToRender[subIdx];
+                    if (sub && sub.length >= 3 && subColor && subColor !== 'transparent') {
+                        const frontSubPoints = sub.map(p => projectPointAtZ(p, endZ, 1));
+                        ctx.save();
+                        ctx.beginPath();
+                        frontSubPoints.forEach((pt, idx) => {
+                            if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                            else ctx.lineTo(pt.x, pt.y);
+                        });
+                        ctx.closePath();
+                        ctx.fillStyle = subColor;
+                        ctx.globalAlpha = (drawing.opacity ?? 1.0);
+                        ctx.fill('evenodd');
+                        ctx.restore();
+                    }
+                });
+            }
+
+            // Render lassoFills on 3D front face
+            if (drawing.lassoFills && drawing.lassoFills.length > 0) {
+                drawing.lassoFills.forEach(fill => {
+                    if (fill.localLassoPoints && fill.localLassoPoints.length >= 3) {
+                        const frontLassoPts = fill.localLassoPoints.map(p => projectPointAtZ(p, endZ, 1));
+                        ctx.save();
+                        ctx.beginPath();
+                        frontLassoPts.forEach((pt, idx) => {
+                            if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                            else ctx.lineTo(pt.x, pt.y);
+                        });
+                        ctx.closePath();
+                        ctx.fillStyle = fill.color;
+                        ctx.globalAlpha = (drawing.opacity ?? 1.0);
+                        ctx.fill('evenodd');
+                        ctx.restore();
+                    }
+                });
+            }
+            
+            // Re-stroke Front Face Outlines so black strokes are always sharp on top
+            ctx.save();
             ctx.beginPath();
-            segments.forEach(seg => {
-                const frontPoints = seg.map(p => projectPointAtZ(p, endZ));
+            const frontStrokesToDraw = subPathsToRender.length > 0 ? subPathsToRender : segments;
+            frontStrokesToDraw.forEach(seg => {
+                const frontPoints = seg.map(p => projectPointAtZ(p, endZ, 1));
                 frontPoints.forEach((pt, idx) => {
                     if (idx === 0) ctx.moveTo(pt.x, pt.y);
                     else ctx.lineTo(pt.x, pt.y);
                 });
-                if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
-                    ctx.closePath();
-                }
             });
-            
-            if (drawing.type === 'shape' || (drawing.fillColor && drawing.fillColor !== 'transparent')) {
-                ctx.fillStyle = frontColorObj.color;
-                ctx.globalAlpha = frontColorObj.opacity * (drawing.opacity ?? 1.0);
-                ctx.fill();
-            }
-            
-            const allFrontPoints = drawing.points.map(p => projectPointAtZ(p, endZ));
-            const avgScale = allFrontPoints.reduce((sum, pt) => sum + pt.scale, 0) / allFrontPoints.length;
-            ctx.strokeStyle = drawing.strokeColor || '#ffffff';
+            const allFrontPoints = drawing.points.map(p => projectPointAtZ(p, endZ, 1));
+            const avgScale = allFrontPoints.reduce((sum, pt) => sum + pt.scale, 0) / (allFrontPoints.length || 1);
+            ctx.strokeStyle = (drawing.strokeColor && drawing.strokeColor !== 'transparent') ? drawing.strokeColor : '#000000';
             ctx.lineWidth = (drawing.strokeWidth ?? 2) * avgScale;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
             ctx.globalAlpha = (drawing.opacity ?? 1.0);
             ctx.stroke();
+            ctx.restore();
+        }
+
+        // Render sub-extrusions (face / sub-mesh extrusions)
+        if (drawing.subExtrusions && drawing.subExtrusions.length > 0) {
+            drawing.subExtrusions.forEach(sub => {
+                this.renderSubExtrusion(ctx, drawing, sub, endZ, center, t3d);
+            });
         }
         
         ctx.restore();
+    }
+
+    // Helper to render sub-extrusions (face & vertex group 3D extrusions)
+    static renderSubExtrusion(
+        ctx: CanvasRenderingContext2D,
+        drawing: VectorObject,
+        sub: any,
+        parentBaseZ: number,
+        parentCenter: { x: number; y: number },
+        parentTransform3D: any
+    ) {
+        if (!sub.pointIndices || sub.pointIndices.length < 2) return;
+        const subPts = sub.pointIndices.map((idx: number) => drawing.points[idx]).filter(Boolean);
+        if (subPts.length < 2) return;
+
+        const color = sub.color || drawing.fillColor || drawing.strokeColor || '#F59E0B';
+        const subDepth = Math.max(1, Math.abs(sub.extrudeZ || 20) * (sub.scaleZ ?? 1));
+        const subSteps = Math.min(20, Math.max(1, Math.ceil(subDepth / 3)));
+
+        const projectSubPt = (p: Point, depthPct: number) => {
+            const local = {
+                x: (p.x - parentCenter.x) + (sub.extrudeX || 0),
+                y: (p.y - parentCenter.y) + (sub.extrudeY || 0),
+                z: parentBaseZ + (depthPct * (sub.extrudeZ || 20))
+            };
+            let scaled = Math3D.applyScale(local, (parentTransform3D.scaleX ?? 1) * (sub.scaleX ?? 1), (parentTransform3D.scaleY ?? 1) * (sub.scaleY ?? 1), 1);
+            let rotated = Math3D.applyRotation(scaled, (parentTransform3D.rotateX ?? 0) + (sub.rotateX ?? 0), (parentTransform3D.rotateY ?? 0) + (sub.rotateY ?? 0), (parentTransform3D.rotateZ ?? 0) + (sub.rotateZ ?? 0));
+            rotated.z += (parentTransform3D.translateZ ?? 0);
+            
+            const proj = Math3D.project(rotated, parentTransform3D.perspective ?? 800, parentCenter.x, parentCenter.y);
+            const pivot = drawing.pivots[0] || { localX: 0, localY: 0 };
+            const worldP = localToWorld(proj, drawing.transform, pivot);
+            return { x: worldP.x, y: worldP.y, scale: proj.scale };
+        };
+
+        // Draw side walls using connected quad quads
+        for (let i = 0; i < subSteps; i++) {
+            const depthPctA = i / subSteps;
+            const depthPctB = (i + 1) / subSteps;
+            const ringA = subPts.map(p => projectSubPt(p, depthPctA));
+            const ringB = subPts.map(p => projectSubPt(p, depthPctB));
+            
+            const litColor = this.applyLighting(color, 0.5 + 0.5 * ((i + 0.5) / subSteps));
+            ctx.save();
+            ctx.fillStyle = litColor;
+            ctx.strokeStyle = litColor;
+            ctx.lineWidth = 0.5;
+            ctx.globalAlpha = (drawing.opacity ?? 1.0);
+
+            for (let j = 0; j < ringA.length - 1; j++) {
+                const p0 = ringA[j];
+                const p1 = ringA[j + 1];
+                const p2 = ringB[j + 1];
+                const p3 = ringB[j];
+
+                ctx.beginPath();
+                ctx.moveTo(p0.x, p0.y);
+                ctx.lineTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.lineTo(p3.x, p3.y);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // Draw cap
+        ctx.beginPath();
+        subPts.forEach((p, idx) => {
+            const pt = projectSubPt(p, 1);
+            if (idx === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.globalAlpha = (drawing.opacity ?? 1.0);
+        ctx.fill('evenodd');
+        ctx.strokeStyle = drawing.strokeColor || '#ffffff';
+        ctx.lineWidth = Math.max(1, (drawing.strokeWidth ?? 2) * 0.8);
+        ctx.stroke();
+
+        // Recursively render child sub-extrusions
+        if (sub.subExtrusions && sub.subExtrusions.length > 0) {
+            const subCenter = subPts.length > 0 
+                ? subPts.reduce((acc, pt) => ({ x: acc.x + pt.x / subPts.length, y: acc.y + pt.y / subPts.length }), { x: 0, y: 0 })
+                : { x: 0, y: 0 };
+            sub.subExtrusions.forEach((childSub: any) => {
+                this.renderSubExtrusion(ctx, drawing, childSub, parentBaseZ + (sub.extrudeZ || 20), subCenter, parentTransform3D);
+            });
+        }
     }
     
     // Apply lighting to color

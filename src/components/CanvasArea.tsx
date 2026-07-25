@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { RotateCcw, Sparkles, Feather, ZoomIn, ZoomOut, Maximize2, Activity } from 'lucide-react';
 import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings, CurvePathState, FlexCurveState, FlexCurveControlPoint } from '../types';
-import { transform3DVertex, project3DVertex, getFaceLightColor, deformVertices3D } from '../utils/engine3D';
+import { transform3DVertex, transform3DVertices, project3DVertex, getFaceLightColor, deformVertices3D } from '../utils/engine3D';
 import { Renderer3D } from '../utils/extruded3D';
 import { 
   distance, 
@@ -14,7 +14,8 @@ import {
   rotatePoint,
   findClosestView360,
   unifyStrokesToSinglePath,
-  finalizeContinuousObject
+  finalizeContinuousObject,
+  extractAllSubPaths
 } from '../utils/math';
 import { getInterpolatedObjects } from '../utils/interpolation';
 
@@ -1807,6 +1808,7 @@ export default function CanvasArea({
   const [snappedPivot, setSnappedPivot] = useState<{ objId: string; pivot: Pivot; worldX: number; worldY: number } | null>(null);
   const [elasticWarningId, setElasticWarningId] = useState<string | null>(null);
   const [currentCursorPos, setCurrentCursorPos] = useState<Point>({ x: 0, y: 0 });
+  const currentCursorPosRef = useRef<Point>({ x: 0, y: 0 });
 
   // 3D Bone and Vertex dragging states
   const [isDrawing3DBone, setIsDrawing3DBone] = useState(false);
@@ -1880,7 +1882,7 @@ export default function CanvasArea({
 
       if (obj.type === '3d' && obj.vertices3D && obj.faces3D && obj.transform3D) {
         // Project all vertices
-        const transformed3D = obj.vertices3D.map(v => transform3DVertex(v, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz));
+        const transformed3D = transform3DVertices(obj.vertices3D, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz);
         const projected = transformed3D.map(v => {
           const proj = project3DVertex(v, 400);
           return localToWorld(proj, obj.transform, obj.pivots[0] || { localX: 0, localY: 0 });
@@ -1960,6 +1962,8 @@ export default function CanvasArea({
     deltaX: number,
     deltaY: number,
     deltaRot: number,
+    scaleXRatio: number = 1,
+    scaleYRatio: number = 1,
     movedSet: Set<string> = new Set<string>()
   ) => {
     const parent = updatedObjects[changedObjectId];
@@ -1981,6 +1985,48 @@ export default function CanvasArea({
     // Union of all unique child IDs
     const uniqueChildIds = Array.from(new Set([...directChildIds, ...boneChildIds]));
 
+    const parentNewT = parent.transform;
+    const parentOrigT: Transform = {
+      ...parentNewT,
+      x: parentNewT.x - deltaX,
+      y: parentNewT.y - deltaY,
+      rotation: (parentNewT.rotation ?? 0) - deltaRot,
+      scaleX: scaleXRatio !== 0 ? parentNewT.scaleX / scaleXRatio : parentNewT.scaleX,
+      scaleY: scaleYRatio !== 0 ? parentNewT.scaleY / scaleYRatio : parentNewT.scaleY,
+    };
+
+    const pPivot = parent.pivots?.[0] || { localX: 0, localY: 0 };
+    const oldParentPivotWorld = {
+      x: parentOrigT.x + pPivot.localX,
+      y: parentOrigT.y + pPivot.localY,
+    };
+    const newParentPivotWorld = {
+      x: parentNewT.x + pPivot.localX,
+      y: parentNewT.y + pPivot.localY,
+    };
+
+    // 3D Pitch (rotateX) ratio for Y offset
+    const origRotXRad = ((parentOrigT.rotateX || 0) * Math.PI) / 180;
+    const newRotXRad = ((parentNewT.rotateX || 0) * Math.PI) / 180;
+    const cosOrigRotX = Math.cos(origRotXRad);
+    const cosNewRotX = Math.cos(newRotXRad);
+    const pitchScale = Math.abs(cosOrigRotX) > 1e-4 ? cosNewRotX / cosOrigRotX : 1;
+
+    // 3D Yaw (rotateY) ratio for X offset
+    const origRotYRad = ((parentOrigT.rotateY || 0) * Math.PI) / 180;
+    const newRotYRad = ((parentNewT.rotateY || 0) * Math.PI) / 180;
+    const cosOrigRotY = Math.cos(origRotYRad);
+    const cosNewRotY = Math.cos(newRotYRad);
+    const yawScale = Math.abs(cosOrigRotY) > 1e-4 ? cosNewRotY / cosOrigRotY : 1;
+
+    const dRotX = (parentNewT.rotateX ?? 0) - (parentOrigT.rotateX ?? 0);
+    const dRotY = (parentNewT.rotateY ?? 0) - (parentOrigT.rotateY ?? 0);
+    const dSkewX = (parentNewT.skewX ?? 0) - (parentOrigT.skewX ?? 0);
+    const dSkewY = (parentNewT.skewY ?? 0) - (parentOrigT.skewY ?? 0);
+    const dPersp = (parentNewT.perspective ?? 0) - (parentOrigT.perspective ?? 0);
+    const dCamX = (parentNewT.cameraAngleX ?? 0) - (parentOrigT.cameraAngleX ?? 0);
+    const dCamY = (parentNewT.cameraAngleY ?? 0) - (parentOrigT.cameraAngleY ?? 0);
+
     for (const childId of uniqueChildIds) {
       if (movedSet.has(childId)) continue; // Prevent double transform
 
@@ -1989,44 +2035,45 @@ export default function CanvasArea({
 
       const childOrigT = { ...child.transform };
 
-      // Determine rotation change
-      const nextRotation = Number((child.transform.rotation + deltaRot).toFixed(2));
-      
-      // Apply basic translation & rotation
+      // Vector from old parent pivot to child old position
+      const vecX = childOrigT.x - oldParentPivotWorld.x;
+      const vecY = childOrigT.y - oldParentPivotWorld.y;
+
+      // Scale vector (2D scale + 3D pitch/yaw squash)
+      const scaledVecX = vecX * scaleXRatio * yawScale;
+      const scaledVecY = vecY * scaleYRatio * pitchScale;
+
+      // Rotate vector around origin by deltaRot
+      const rotatedVec = rotatePoint({ x: scaledVecX, y: scaledVecY }, deltaRot, { x: 0, y: 0 });
+
+      // Child new world position relative to new parent pivot
+      const childNewX = Number((newParentPivotWorld.x + rotatedVec.x).toFixed(2));
+      const childNewY = Number((newParentPivotWorld.y + rotatedVec.y).toFixed(2));
+
       child.transform = {
-        ...child.transform,
-        rotation: nextRotation,
+        ...childOrigT,
+        x: childNewX,
+        y: childNewY,
+        rotation: Number(((childOrigT.rotation ?? 0) + deltaRot).toFixed(2)),
+        scaleX: Number(((childOrigT.scaleX ?? 1) * scaleXRatio * yawScale).toFixed(2)),
+        scaleY: Number(((childOrigT.scaleY ?? 1) * scaleYRatio * pitchScale).toFixed(2)),
+        rotateX: Number(((childOrigT.rotateX ?? 0) + dRotX).toFixed(2)),
+        rotateY: Number(((childOrigT.rotateY ?? 0) + dRotY).toFixed(2)),
+        skewX: Number(((childOrigT.skewX ?? 0) + dSkewX).toFixed(2)),
+        skewY: Number(((childOrigT.skewY ?? 0) + dSkewY).toFixed(2)),
+        perspective: Number(((childOrigT.perspective ?? 0) + dPersp).toFixed(2)),
+        cameraAngleX: Number(((childOrigT.cameraAngleX ?? 0) + dCamX).toFixed(2)),
+        cameraAngleY: Number(((childOrigT.cameraAngleY ?? 0) + dCamY).toFixed(2)),
       };
-
-      if (deltaRot !== 0) {
-        let pJointLocal = { x: 0, y: 0 };
-        const bone = bones.find(b => b.startObjectId === changedObjectId && b.endObjectId === childId);
-        if (bone) {
-          pJointLocal = { x: bone.startLocalX, y: bone.startLocalY };
-        } else if (parent.pivots && parent.pivots[0]) {
-          pJointLocal = { x: parent.pivots[0].localX, y: parent.pivots[0].localY };
-        }
-
-        const parentJointWorld = localToWorld(
-          pJointLocal,
-          parent.transform,
-          parent.pivots[0]
-        );
-        
-        const childWorldPos = { x: child.transform.x, y: child.transform.y };
-        const rotatedChildWorldPos = rotatePoint(childWorldPos, deltaRot, parentJointWorld);
-        
-        child.transform.x = Number(rotatedChildWorldPos.x.toFixed(2));
-        child.transform.y = Number(rotatedChildWorldPos.y.toFixed(2));
-      } else {
-        child.transform.x = Number((child.transform.x + deltaX).toFixed(2));
-        child.transform.y = Number((child.transform.y + deltaY).toFixed(2));
-      }
 
       // Recursively propagate to grandchild objects!
       const nextDX = child.transform.x - childOrigT.x;
       const nextDY = child.transform.y - childOrigT.y;
-      propagateRigTransforms(updatedObjects, childId, nextDX, nextDY, deltaRot, movedSet);
+      const nextDRot = (child.transform.rotation ?? 0) - (childOrigT.rotation ?? 0);
+      const nextSXRatio = childOrigT.scaleX !== 0 ? (child.transform.scaleX ?? 1) / childOrigT.scaleX : 1;
+      const nextSYRatio = childOrigT.scaleY !== 0 ? (child.transform.scaleY ?? 1) / childOrigT.scaleY : 1;
+
+      propagateRigTransforms(updatedObjects, childId, nextDX, nextDY, nextDRot, nextSXRatio, nextSYRatio, movedSet);
     }
   };
 
@@ -2177,7 +2224,7 @@ export default function CanvasArea({
         const obj = objects[selectedObjectId];
         if (obj.type === '3d' && obj.vertices3D && obj.transform3D) {
           // Check if we clicked on a 3D vertex first to start single 3D mesh skeletal rigging!
-          const transformed3D = obj.vertices3D.map(v => transform3DVertex(v, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz));
+          const transformed3D = transform3DVertices(obj.vertices3D, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz);
           const projected = transformed3D.map(v => {
             const proj = project3DVertex(v, 400);
             return localToWorld(proj, obj.transform, obj.pivots[0] || { localX: 0, localY: 0 });
@@ -2445,7 +2492,7 @@ export default function CanvasArea({
           // Only allow filling on currently selected drawings, strictly as requested!
           if (selectedObjectId === clickedObj.id) {
             if (clickedObj.type === '3d' && clickedObj.vertices3D && clickedObj.faces3D && clickedObj.transform3D) {
-              const transformed3D = clickedObj.vertices3D.map(v => transform3DVertex(v, clickedObj.transform3D!.x, clickedObj.transform3D!.y, clickedObj.transform3D!.z, clickedObj.transform3D!.rx, clickedObj.transform3D!.ry, clickedObj.transform3D!.rz, clickedObj.transform3D!.sx, clickedObj.transform3D!.sy, clickedObj.transform3D!.sz));
+              const transformed3D = transform3DVertices(clickedObj.vertices3D, clickedObj.transform3D!.x, clickedObj.transform3D!.y, clickedObj.transform3D!.z, clickedObj.transform3D!.rx, clickedObj.transform3D!.ry, clickedObj.transform3D!.rz, clickedObj.transform3D!.sx, clickedObj.transform3D!.sy, clickedObj.transform3D!.sz);
               const projected = transformed3D.map(v => {
                 const proj = project3DVertex(v, 400);
                 return localToWorld(proj, clickedObj.transform, clickedObj.pivots[0] || { localX: 0, localY: 0 });
@@ -2487,25 +2534,43 @@ export default function CanvasArea({
                 historyPush();
               }
             } else {
-              // Check if path is closed
-              const isPathClosedLocal = (obj: VectorObject): boolean => {
-                if (obj.type === 'shape' || obj.type === 'stroke') return true;
-                if (obj.type === 'image') return false;
-                if (!obj.points || obj.points.length < 3) return false;
-                return true;
-              };
+              const pivot = clickedObj.pivots[0] || { localX: 0, localY: 0 };
+              const subPathsToUse = (clickedObj.subPaths && clickedObj.subPaths.length > 0)
+                ? clickedObj.subPaths
+                : extractAllSubPaths(clickedObj);
 
-              const isClosed = isPathClosedLocal(clickedObj);
-              
+              let hitSubIdx = -1;
+              if (subPathsToUse && subPathsToUse.length > 0) {
+                for (let i = subPathsToUse.length - 1; i >= 0; i--) {
+                  const sub = subPathsToUse[i];
+                  if (sub && sub.length >= 3) {
+                    const worldSubPts = sub.map(p => localToWorld(p, clickedObj.transform, pivot));
+                    if (isPointInPolygon(coords, worldSubPts)) {
+                      hitSubIdx = i;
+                      break;
+                    }
+                  }
+                }
+              }
+
               setObjects(prev => {
                 const updated = { ...prev };
                 const color = fillToolColor;
+                const curObj = updated[clickedObj.id] || clickedObj;
 
-                // Strictly apply fill color ONLY to the selected drawing without overriding stroke color
-                updated[clickedObj.id] = {
-                  ...clickedObj,
-                  fillColor: color
-                };
+                if (hitSubIdx !== -1) {
+                  const newSubPathFills = { ...(curObj.subPathFills || {}), [hitSubIdx]: color };
+                  updated[clickedObj.id] = {
+                    ...curObj,
+                    subPathFills: newSubPathFills,
+                    fillColor: (curObj.fillColor && curObj.fillColor !== 'transparent') ? curObj.fillColor : color
+                  };
+                } else {
+                  updated[clickedObj.id] = {
+                    ...curObj,
+                    fillColor: color
+                  };
+                }
 
                 return updated;
               });
@@ -2598,7 +2663,7 @@ export default function CanvasArea({
 
         // If the object is a 3D model, handle 3D vertex selection
         if (obj.type === '3d' && obj.vertices3D && obj.transform3D) {
-          const transformed3D = obj.vertices3D.map(v => transform3DVertex(v, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz));
+          const transformed3D = transform3DVertices(obj.vertices3D, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz);
           const projected = transformed3D.map(v => {
             const proj = project3DVertex(v, 400);
             return localToWorld(proj, obj.transform, obj.pivots[0] || { localX: 0, localY: 0 });
@@ -2811,6 +2876,40 @@ export default function CanvasArea({
         setSelectedObjectId(clickedObj.id);
       }
       return;
+    }
+
+    // 🌟 Wireframe Mode Direct Vertex Point Click Handler
+    if (selectedObjectId && objects[selectedObjectId] && objects[selectedObjectId].wireframeMode) {
+      const obj = objects[selectedObjectId];
+      const pivot = obj.pivots[0] || { localX: 0, localY: 0 };
+      let clickedVtxIdx = -1;
+      let minVtxDist = 16;
+
+      obj.points.forEach((p, idx) => {
+        const worldPt = localToWorld(p, obj.transform, pivot);
+        const d = distance(coords, worldPt);
+        if (d < minVtxDist) {
+          minVtxDist = d;
+          clickedVtxIdx = idx;
+        }
+      });
+
+      if (clickedVtxIdx !== -1) {
+        const currentSet = new Set(obj.selectedPointIndices || []);
+        if (currentSet.has(clickedVtxIdx)) {
+          currentSet.delete(clickedVtxIdx);
+        } else {
+          currentSet.add(clickedVtxIdx);
+        }
+        setObjects(prev => ({
+          ...prev,
+          [selectedObjectId]: {
+            ...prev[selectedObjectId],
+            selectedPointIndices: Array.from(currentSet)
+          }
+        }));
+        return;
+      }
     }
 
     // SWP (Smart Warp Pin) tool pointer down logic
@@ -3201,7 +3300,10 @@ export default function CanvasArea({
     }
 
     const coords = getCanvasCoords(e);
-    setCurrentCursorPos(coords);
+    currentCursorPosRef.current = coords;
+    if (isDrawing || activeTool === 'KNF' || activeTool === 'LQB' || (activeTool === 'LSO' && lassoMode === 'pen') || isDrawing3DBone || boneStartPoint !== null || activeTool === 'PEN' || activeTool === 'BON') {
+      setCurrentCursorPos(coords);
+    }
 
     if (activeTool === 'SEL') {
       const pointerIds = Object.keys(activePointersRef.current);
@@ -4255,7 +4357,7 @@ export default function CanvasArea({
             });
           }
 
-          propagateRigTransforms(updated, selectedObjectId, deltaX, deltaY, 0, movedSet);
+          propagateRigTransforms(updated, selectedObjectId, deltaX, deltaY, 0, 1, 1, movedSet);
           return updated;
         });
       }
@@ -4347,7 +4449,9 @@ export default function CanvasArea({
             }
           };
 
-          propagateRigTransforms(updated, selectedObjectId, 0, 0, 0);
+          const sXRatio = obj.transform.scaleX !== 0 ? scaleX / obj.transform.scaleX : 1;
+          const sYRatio = obj.transform.scaleY !== 0 ? scaleY / obj.transform.scaleY : 1;
+          propagateRigTransforms(updated, selectedObjectId, 0, 0, 0, sXRatio, sYRatio);
           return updated;
         });
       }
@@ -4595,7 +4699,7 @@ export default function CanvasArea({
             const updatedVtx = [...(prev[selectedObjectId].vertices3D || [])];
             
             // Project vertices to find close ones
-            const transformed3D = updatedVtx.map(v => transform3DVertex(v, originalObj.transform3D!.x, originalObj.transform3D!.y, originalObj.transform3D!.z, originalObj.transform3D!.rx, originalObj.transform3D!.ry, originalObj.transform3D!.rz, originalObj.transform3D!.sx, originalObj.transform3D!.sy, originalObj.transform3D!.sz));
+            const transformed3D = transform3DVertices(updatedVtx, originalObj.transform3D!.x, originalObj.transform3D!.y, originalObj.transform3D!.z, originalObj.transform3D!.rx, originalObj.transform3D!.ry, originalObj.transform3D!.rz, originalObj.transform3D!.sx, originalObj.transform3D!.sy, originalObj.transform3D!.sz);
             const projected = transformed3D.map(v => {
               const proj = project3DVertex(v, 400);
               return localToWorld(proj, originalObj.transform, originalObj.pivots[0] || { localX: 0, localY: 0 });
@@ -4901,7 +5005,7 @@ export default function CanvasArea({
       const obj = objects[selectedObjectId];
       if (obj && obj.type === '3d' && obj.vertices3D && obj.transform3D) {
         // Project all its vertices
-        const transformed3D = obj.vertices3D.map(v => transform3DVertex(v, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz));
+        const transformed3D = transform3DVertices(obj.vertices3D, obj.transform3D!.x, obj.transform3D!.y, obj.transform3D!.z, obj.transform3D!.rx, obj.transform3D!.ry, obj.transform3D!.rz, obj.transform3D!.sx, obj.transform3D!.sy, obj.transform3D!.sz);
         const projected = transformed3D.map(v => {
           const proj = project3DVertex(v, 400);
           return localToWorld(proj, obj.transform, obj.pivots[0] || { localX: 0, localY: 0 });
@@ -4950,6 +5054,29 @@ export default function CanvasArea({
     setDraggedDirectRigBoneId(null);
     strokePointsRef.current = [];
     setStrokePoints([]);
+    if (isDrawingLasso && lassoPoints && lassoPoints.length >= 3 && selectedObjectId && objects[selectedObjectId]) {
+      const obj = objects[selectedObjectId];
+      if (obj.wireframeMode && obj.points && obj.points.length > 0) {
+        const pivot = obj.pivots[0] || { localX: 0, localY: 0 };
+        const currentSet = new Set(obj.selectedPointIndices || []);
+        
+        obj.points.forEach((p, idx) => {
+          const worldPt = localToWorld(p, obj.transform, pivot);
+          if (isPointInPolygon(worldPt, lassoPoints)) {
+            currentSet.add(idx);
+          }
+        });
+
+        setObjects(prev => ({
+          ...prev,
+          [selectedObjectId]: {
+            ...prev[selectedObjectId],
+            selectedPointIndices: Array.from(currentSet)
+          }
+        }));
+      }
+    }
+
     setIsDrawingLasso(false);
     } catch (err: any) {
       console.error("Pointer up handler failed:", err);
@@ -5001,10 +5128,13 @@ export default function CanvasArea({
 
   // Dynamic canvas drawing loop
   useEffect(() => {
-    const frontCanvas = frontCanvasRef.current;
-    if (!frontCanvas) return;
-    const ctx = frontCanvas.getContext('2d');
-    if (!ctx) return;
+    let animId: number;
+
+    animId = requestAnimationFrame(() => {
+      const frontCanvas = frontCanvasRef.current;
+      if (!frontCanvas) return;
+      const ctx = frontCanvas.getContext('2d');
+      if (!ctx) return;
 
     // Clear and Redraw physical viewport with slate workspace background (pasteboard)
     ctx.fillStyle = '#17171a';
@@ -5247,7 +5377,7 @@ export default function CanvasArea({
         // Apply bone-based rigging deformation to the single mesh
         const skinnedVertices = deformVertices3D(drawObj.vertices3D, (drawObj as any).bones3D || []);
         
-        const transformed3D = skinnedVertices.map(v => transform3DVertex(v, drawObj.transform3D!.x, drawObj.transform3D!.y, drawObj.transform3D!.z, drawObj.transform3D!.rx, drawObj.transform3D!.ry, drawObj.transform3D!.rz, drawObj.transform3D!.sx, drawObj.transform3D!.sy, drawObj.transform3D!.sz));
+        const transformed3D = transform3DVertices(skinnedVertices, drawObj.transform3D!.x, drawObj.transform3D!.y, drawObj.transform3D!.z, drawObj.transform3D!.rx, drawObj.transform3D!.ry, drawObj.transform3D!.rz, drawObj.transform3D!.sx, drawObj.transform3D!.sy, drawObj.transform3D!.sz);
         const projected = transformed3D.map(v => {
           const proj = project3DVertex(v, 400);
           return localToWorld(proj, drawObj.transform, drawObj.pivots[0] || { localX: 0, localY: 0 });
@@ -5330,10 +5460,10 @@ export default function CanvasArea({
 
         // Project and Draw 3D subpaths (like eyes/mouth detail strokes on the face)
         if (drawObj.subPaths3D && drawObj.subPaths3D.length > 0) {
-          drawObj.subPaths3D.forEach(sub => {
+          drawObj.subPaths3D.forEach((sub, subIdx) => {
             // Apply bone-based rigging deformation to the sub-path vertices
             const skinnedSub = deformVertices3D(sub, (drawObj as any).bones3D || []);
-            const transformedSub = skinnedSub.map(v => transform3DVertex(v, drawObj.transform3D!.x, drawObj.transform3D!.y, drawObj.transform3D!.z, drawObj.transform3D!.rx, drawObj.transform3D!.ry, drawObj.transform3D!.rz, drawObj.transform3D!.sx, drawObj.transform3D!.sy, drawObj.transform3D!.sz));
+            const transformedSub = transform3DVertices(skinnedSub, drawObj.transform3D!.x, drawObj.transform3D!.y, drawObj.transform3D!.z, drawObj.transform3D!.rx, drawObj.transform3D!.ry, drawObj.transform3D!.rz, drawObj.transform3D!.sx, drawObj.transform3D!.sy, drawObj.transform3D!.sz);
             const projectedSub = transformedSub.map(v => {
               const proj = project3DVertex(v, 400);
               return localToWorld(proj, drawObj.transform, drawObj.pivots[0] || { localX: 0, localY: 0 });
@@ -5345,6 +5475,14 @@ export default function CanvasArea({
               for (let i = 1; i < projectedSub.length; i++) {
                 ctx.lineTo(projectedSub[i].x, projectedSub[i].y);
               }
+              
+              const subFillColor = drawObj.subPathFills?.[subIdx];
+              if (subFillColor && subFillColor !== 'transparent') {
+                ctx.closePath();
+                ctx.fillStyle = subFillColor;
+                ctx.fill('evenodd');
+              }
+
               ctx.lineWidth = (drawObj.strokeWidth || 1.2) * (drawObj.transform3D?.sx || 1.0);
               ctx.strokeStyle = drawObj.strokeColor || '#000000';
               ctx.lineCap = 'round';
@@ -5500,6 +5638,11 @@ export default function CanvasArea({
 
       // Draw vector paths or image
       if (drawObj.type === 'image' && drawObj.imageUrl) {
+        if (drawObj.transform3D?.enabled) {
+          Renderer3D.render(drawObj, ctx);
+          ctx.restore();
+          return;
+        }
         // Render image
         let img = imagesCacheRef.current[drawObj.imageUrl];
         if (!img) {
@@ -5634,33 +5777,113 @@ export default function CanvasArea({
         Renderer3D.render(drawObj, ctx);
       } else {
         // Render vector drawing
-        // 1. Fill interior enclosed area when fillColor is specified
-        if (drawObj.fillColor && drawObj.fillColor !== 'transparent') {
-          ctx.save();
-          ctx.beginPath();
-          if (worldPoints.length > 0) {
-            ctx.moveTo(worldPoints[0].x, worldPoints[0].y);
-            for (let i = 1; i < worldPoints.length; i++) {
-              const isHidden = drawObj.hiddenPoints?.includes(i);
-              if (!isHidden) {
-                ctx.lineTo(worldPoints[i].x, worldPoints[i].y);
-              }
-            }
-            ctx.closePath();
-          }
-          ctx.fillStyle = drawObj.fillColor;
-          ctx.fill();
+        const isStartEndClosed2D = worldPoints.length >= 3 && Math.hypot(worldPoints[worldPoints.length - 1].x - worldPoints[0].x, worldPoints[worldPoints.length - 1].y - worldPoints[0].y) < 15;
+        const hasExplicitFillColor = !!(drawObj.fillColor && drawObj.fillColor !== 'transparent');
+        const shouldFill2D = (drawObj.autoFillInnerRegion && hasExplicitFillColor) || drawObj.type === 'shape' || hasExplicitFillColor || (isStartEndClosed2D && hasExplicitFillColor);
+        const active2DFillColor = hasExplicitFillColor ? drawObj.fillColor! : (drawObj.strokeColor || '#F59E0B');
 
-          // Dilation bleed ONLY when autoFillGaps/fillGaps is explicitly active
-          const expansion = drawObj.gapFillExpansion ?? ((drawObj.autoFillGaps || drawObj.fillGaps) ? 4 : 0);
-          if (expansion > 0 && (drawObj.autoFillGaps || drawObj.fillGaps)) {
-            ctx.strokeStyle = drawObj.fillColor;
+        if (shouldFill2D) {
+          ctx.save();
+          const subPathsToUse = (drawObj.subPaths && drawObj.subPaths.length > 0) ? drawObj.subPaths : extractAllSubPaths(drawObj);
+          if (subPathsToUse && subPathsToUse.length > 0) {
+            subPathsToUse.forEach((sub, subIdx) => {
+              const localSubPoints = sub.map((p, idx) => deformLocalPoint(p, drawObj, idx, subIdx));
+              const worldSubPoints = localSubPoints.map(p => localToWorld(p, drawObj.transform, pivot));
+              if (worldSubPoints.length >= 3) {
+                ctx.beginPath();
+                ctx.moveTo(worldSubPoints[0].x, worldSubPoints[0].y);
+                for (let i = 1; i < worldSubPoints.length; i++) {
+                  ctx.lineTo(worldSubPoints[i].x, worldSubPoints[i].y);
+                }
+                ctx.closePath();
+                const subColor = drawObj.subPathFills?.[subIdx] || active2DFillColor;
+                if (subColor && subColor !== 'transparent') {
+                  ctx.fillStyle = subColor;
+                  ctx.fill('evenodd');
+                }
+              }
+            });
+          } else {
+            drawAllPaths(true);
+            ctx.fillStyle = active2DFillColor;
+            ctx.fill('evenodd');
+          }
+
+          // Dilation bleed ONLY when autoFillGaps/fillGaps/autoFillInnerRegion is explicitly active
+          const expansion = drawObj.gapFillExpansion ?? ((drawObj.autoFillGaps || drawObj.fillGaps || drawObj.autoFillInnerRegion) ? 4 : 0);
+          if (expansion > 0) {
+            ctx.strokeStyle = active2DFillColor;
             ctx.lineWidth = expansion * 2;
             ctx.lineJoin = 'round';
             ctx.lineCap = 'round';
             ctx.stroke();
           }
           ctx.restore();
+        }
+
+        // Render individual sub-path custom fills if present (when shouldFill2D is false)
+        if (!shouldFill2D && drawObj.subPathFills && Object.keys(drawObj.subPathFills).length > 0) {
+          ctx.save();
+          const subPathsToUse = (drawObj.subPaths && drawObj.subPaths.length > 0) ? drawObj.subPaths : extractAllSubPaths(drawObj);
+          Object.entries(drawObj.subPathFills).forEach(([subIdxStr, subColor]) => {
+            const subIdx = parseInt(subIdxStr, 10);
+            const sub = subPathsToUse?.[subIdx];
+            if (sub && sub.length >= 3 && subColor && subColor !== 'transparent') {
+              const localSubPoints = sub.map((p, idx) => deformLocalPoint(p, drawObj, idx, subIdx));
+              const worldSubPoints = localSubPoints.map(p => localToWorld(p, drawObj.transform, pivot));
+              if (worldSubPoints.length >= 3) {
+                ctx.beginPath();
+                ctx.moveTo(worldSubPoints[0].x, worldSubPoints[0].y);
+                for (let i = 1; i < worldSubPoints.length; i++) {
+                  ctx.lineTo(worldSubPoints[i].x, worldSubPoints[i].y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = subColor;
+                ctx.fill('evenodd');
+              }
+            }
+          });
+          ctx.restore();
+        }
+
+        // Render Lasso Fills BEFORE strokes so drawing strokes remain crisp on top!
+        if (drawObj.lassoFills && drawObj.lassoFills.length > 0) {
+          drawObj.lassoFills.forEach(fill => {
+            ctx.save();
+            drawAllPaths(true);
+            if (drawObj.autoFillGaps || drawObj.fillGaps || (drawObj.gapFillExpansion && drawObj.gapFillExpansion > 0)) {
+              const exp = drawObj.gapFillExpansion ?? 4;
+              ctx.strokeStyle = fill.color;
+              ctx.lineWidth = exp * 2;
+              ctx.lineJoin = 'round';
+              ctx.lineCap = 'round';
+              ctx.stroke();
+            }
+            ctx.clip('evenodd');
+            
+            ctx.beginPath();
+            const localPivot = drawObj.pivots[0] || { localX: 0, localY: 0 };
+            const worldLassoPoints = getWorldLassoPointsForObject(fill, drawObj, localPivot);
+            if (worldLassoPoints.length > 0) {
+              ctx.moveTo(worldLassoPoints[0].x, worldLassoPoints[0].y);
+              for (let i = 1; i < worldLassoPoints.length; i++) {
+                ctx.lineTo(worldLassoPoints[i].x, worldLassoPoints[i].y);
+              }
+              ctx.closePath();
+              ctx.fillStyle = fill.color;
+              ctx.fill();
+            }
+
+            const fillExp = drawObj.gapFillExpansion ?? (drawObj.autoFillGaps || drawObj.fillGaps ? 4 : 2);
+            if (fillExp > 0) {
+              ctx.strokeStyle = fill.color;
+              ctx.lineWidth = fillExp * 2;
+              ctx.lineJoin = 'round';
+              ctx.lineCap = 'round';
+              ctx.stroke();
+            }
+            ctx.restore();
+          });
         }
 
         if (drawObj.type === 'stroke') {
@@ -5693,7 +5916,13 @@ export default function CanvasArea({
                   gap: p.gap
                 };
               });
-              drawVariableWidthStroke(ctx, worldSubPoints, drawObj.strokeColor, realismSettings, strokeBrush);
+              const subStrokeColor = drawObj.subPathStrokes?.[subIdx]?.strokeColor || drawObj.strokeColor;
+              const subStrokeWidth = drawObj.subPathStrokes?.[subIdx]?.strokeWidth ?? drawObj.strokeWidth;
+              const subBrush = {
+                ...strokeBrush,
+                strokeWidth: subStrokeWidth
+              };
+              drawVariableWidthStroke(ctx, worldSubPoints, subStrokeColor, realismSettings, subBrush);
             });
           } else {
             const worldStrokePoints = localPoints.map((p) => {
@@ -5712,11 +5941,28 @@ export default function CanvasArea({
             drawVariableWidthStroke(ctx, worldStrokePoints, drawObj.strokeColor, realismSettings, strokeBrush);
           }
         } else {
-          drawAllPaths();
-          
-          ctx.lineWidth = drawObj.strokeWidth;
-          ctx.strokeStyle = drawObj.strokeColor;
-          ctx.stroke();
+          if (drawObj.subPaths && drawObj.subPaths.length > 0) {
+            drawObj.subPaths.forEach((sub, subIdx) => {
+              const localSubPoints = sub.map((p, idx) => deformLocalPoint(p, drawObj, idx, subIdx));
+              const worldSubPoints = localSubPoints.map(p => localToWorld(p, drawObj.transform, pivot));
+              if (worldSubPoints.length > 0) {
+                ctx.beginPath();
+                ctx.moveTo(worldSubPoints[0].x, worldSubPoints[0].y);
+                for (let i = 1; i < worldSubPoints.length; i++) {
+                  ctx.lineTo(worldSubPoints[i].x, worldSubPoints[i].y);
+                }
+                ctx.lineWidth = drawObj.subPathStrokes?.[subIdx]?.strokeWidth ?? drawObj.strokeWidth;
+                ctx.strokeStyle = drawObj.subPathStrokes?.[subIdx]?.strokeColor || drawObj.strokeColor;
+                ctx.stroke();
+              }
+            });
+          } else {
+            drawAllPaths();
+            
+            ctx.lineWidth = drawObj.strokeWidth;
+            ctx.strokeStyle = drawObj.strokeColor;
+            ctx.stroke();
+          }
         }
       }
 
@@ -5774,55 +6020,6 @@ export default function CanvasArea({
         ctx.stroke();
         
         ctx.restore();
-      }
-
-      // 4.5 Lasso Fills (drawn relative to the local object space)
-      if (obj.lassoFills && obj.lassoFills.length > 0 && obj.type !== 'image') {
-        obj.lassoFills.forEach(fill => {
-          ctx.save();
-          
-          // Clip 1: Only draw inside the parent drawing's bounds
-          drawAllPaths(true);
-          if (obj.autoFillGaps || obj.fillGaps || (obj.gapFillExpansion && obj.gapFillExpansion > 0)) {
-            const exp = obj.gapFillExpansion ?? 4;
-            ctx.strokeStyle = fill.color;
-            ctx.lineWidth = exp * 2;
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            ctx.stroke();
-          }
-          ctx.clip();
-          
-          // Clip 2: Only draw inside the lasso selection path
-          ctx.beginPath();
-          const localPivot = obj.pivots[0] || { localX: 0, localY: 0 };
-          const worldLassoPoints = getWorldLassoPointsForObject(fill, obj, localPivot);
-          if (worldLassoPoints.length > 0) {
-            ctx.moveTo(worldLassoPoints[0].x, worldLassoPoints[0].y);
-            for (let i = 1; i < worldLassoPoints.length; i++) {
-              ctx.lineTo(worldLassoPoints[i].x, worldLassoPoints[i].y);
-            }
-            ctx.closePath();
-          }
-          ctx.clip();
-          
-          // Fill the clipped region with the lasso color
-          drawAllPaths(true);
-          ctx.fillStyle = fill.color;
-          ctx.fill();
-
-          // Dilation bleed stroke for lasso fills to seal gaps completely as drawing deforms
-          const fillExp = obj.gapFillExpansion ?? (obj.autoFillGaps || obj.fillGaps ? 4 : 2);
-          if (fillExp > 0) {
-            ctx.strokeStyle = fill.color;
-            ctx.lineWidth = fillExp * 2;
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            ctx.stroke();
-          }
-          
-          ctx.restore();
-        });
       }
 
       // 4.6 Smart Mesh Coloring
@@ -6173,6 +6370,61 @@ export default function CanvasArea({
           ctx.arc(pt.x, pt.y, 1.8, 0, Math.PI * 2);
           ctx.fillStyle = '#FFFFFF';
           ctx.fill();
+        });
+        ctx.restore();
+      }
+    }
+
+    // 🌟 Render Wireframe Mesh Vertices & Selection Overlay
+    if (effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
+      const obj = objects[effectiveSelectedObjectId];
+      if (obj.wireframeMode && obj.points && obj.points.length > 0) {
+        ctx.save();
+        const pivot = obj.pivots[0] || { localX: 0, localY: 0 };
+        const worldPts = obj.points.map(p => localToWorld(p, obj.transform, pivot));
+        const selectedSet = new Set(obj.selectedPointIndices || []);
+
+        // 1. Connecting Wireframe lines
+        if (worldPts.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(worldPts[0].x, worldPts[0].y);
+          for (let i = 1; i < worldPts.length; i++) {
+            ctx.lineTo(worldPts[i].x, worldPts[i].y);
+          }
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash([3, 3]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // 2. Vertices (black dots by default; bright yellow glowing dots when selected)
+        worldPts.forEach((pt, i) => {
+          const isSelected = selectedSet.has(i);
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, isSelected ? 8 : 5, 0, Math.PI * 2);
+
+          if (isSelected) {
+            ctx.fillStyle = '#FFE600'; // Vibrant Yellow
+            ctx.shadowColor = '#FEF08A';
+            ctx.shadowBlur = 12;
+          } else {
+            ctx.fillStyle = '#111827'; // Dark Black/Gray
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+          }
+          ctx.fill();
+
+          ctx.strokeStyle = isSelected ? '#FFFFFF' : '#9CA3AF';
+          ctx.lineWidth = isSelected ? 2 : 1;
+          ctx.stroke();
+
+          if (isSelected) {
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fill();
+          }
         });
         ctx.restore();
       }
@@ -6988,6 +7240,9 @@ export default function CanvasArea({
 
     // Restore top-level viewport zoom/pan transformation
     ctx.restore();
+    });
+
+    return () => cancelAnimationFrame(animId);
   }, [
     objects,
     selectedObjectId,
