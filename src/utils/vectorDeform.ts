@@ -2,16 +2,18 @@ import { Point, CustomVectorDeformNode } from '../types';
 
 /**
  * Calculates deformed object points given original object points and custom vector deform nodes.
- * Uses Inverse Distance Weighting / Radial Smooth Blending from rest node positions to current node positions.
+ * Uses localized smooth Gaussian displacement blending: dragging a node moves and blends
+ * the local region around that node, while leaving distant drawing geometry completely intact
+ * without global scaling or full-shape translation.
  *
  * @param origPoints - Array of original un-deformed object points
  * @param nodes - Array of custom vector deform nodes with current (x, y) and rest (origX, origY)
- * @param stiffness - Smoothing / Decay radius parameter (default ~30px)
+ * @param stiffness - Local influence radius parameter (default ~35)
  */
 export function calculateCustomVectorDeformedPoints(
   origPoints: Point[],
   nodes: CustomVectorDeformNode[],
-  stiffness: number = 30
+  stiffness: number = 35
 ): Point[] {
   if (!origPoints || origPoints.length === 0) return [];
   if (!nodes || nodes.length === 0) return origPoints;
@@ -28,12 +30,14 @@ export function calculateCustomVectorDeformedPoints(
     return origPoints;
   }
 
-  const epsSq = Math.max(100, stiffness * stiffness);
+  // Calculate local influence radius based on stiffness
+  const radius = Math.max(25, stiffness * 2.2);
+  const radiusSq = radius * radius;
 
   return origPoints.map(pt => {
-    let sumWeight = 0;
-    let dispX = 0;
-    let dispY = 0;
+    let totalDispX = 0;
+    let totalDispY = 0;
+    let totalWeight = 0;
 
     for (let i = 0; i < activeDisplacements.length; i++) {
       const node = activeDisplacements[i];
@@ -41,16 +45,27 @@ export function calculateCustomVectorDeformedPoints(
       const dy = pt.y - node.origY;
       const distSq = dx * dx + dy * dy;
 
-      // Inverse Distance Weighting with smooth quadratic decay
-      const w = 1 / (distSq + epsSq);
-      sumWeight += w;
-      dispX += node.dx * w;
-      dispY += node.dy * w;
+      // Smooth localized Gaussian falloff kernel
+      const w = Math.exp(-distSq / (2 * radiusSq));
+
+      totalWeight += w;
+      totalDispX += node.dx * w;
+      totalDispY += node.dy * w;
     }
 
-    if (sumWeight > 0) {
-      dispX /= sumWeight;
-      dispY /= sumWeight;
+    let dispX = 0;
+    let dispY = 0;
+
+    if (totalWeight > 0) {
+      if (totalWeight > 1.0) {
+        // Normalize if overlapping influence regions exceed 1 to prevent ballooning
+        dispX = totalDispX / totalWeight;
+        dispY = totalDispY / totalWeight;
+      } else {
+        // Smooth localized displacement fading to zero at a distance
+        dispX = totalDispX;
+        dispY = totalDispY;
+      }
     }
 
     const extendedPt = pt as Point & { p1?: Point; p2?: Point };
@@ -63,3 +78,4 @@ export function calculateCustomVectorDeformedPoints(
     };
   });
 }
+
