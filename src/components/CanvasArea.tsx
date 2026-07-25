@@ -7647,7 +7647,36 @@ export default function CanvasArea({
         </div>
       )}
 
-      {/* Floating Continuous Drawing Mode HUD */}
+      {/* Floating Vector Pen Area HUD */}
+      {activeTool === 'PEN' && penPoints.length > 0 && (
+        <div id="canvas-pen-area-hud" className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-neutral-900/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-neutral-800 shadow-xl pointer-events-auto z-50 animate-fade-in text-white text-xs">
+          <span className="text-[10px] text-amber-500 font-black uppercase tracking-wider flex items-center gap-1 font-mono">
+            <Feather className="w-3.5 h-3.5 text-amber-400" />
+            Vector Pen ({penPoints.length} pts)
+          </span>
+          <div className="h-4 w-[1px] bg-neutral-800 mx-1" />
+          <button
+            type="button"
+            disabled={penPoints.length < 3}
+            onClick={() => {
+              setLassoPoints([...penPoints]);
+              setPenPoints([]);
+            }}
+            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1 shadow shadow-emerald-600/30"
+            title="Create area selection from vector pen points to transform drawings inside"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            Done & Transform Area
+          </button>
+          <button
+            type="button"
+            onClick={() => setPenPoints([])}
+            className="px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+          >
+            Clear
+          </button>
+        </div>
+      )}
       {continuousDrawActive && (
         <div id="canvas-continuous-draw-hud" className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-neutral-900/95 backdrop-blur-md px-5 py-2.5 rounded-2xl border border-emerald-500/40 shadow-2xl pointer-events-auto z-50 animate-fade-in text-white text-xs">
           <span className="text-[11px] text-emerald-400 font-black uppercase tracking-wider flex items-center gap-1.5 border-r border-neutral-800 pr-3 font-mono">

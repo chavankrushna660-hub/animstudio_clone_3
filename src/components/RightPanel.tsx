@@ -245,9 +245,11 @@ export default function RightPanel({
   const [lassoSliders, setLassoSliders] = useState({
     translateX: 0,
     translateY: 0,
+    translateZ: 0,
     rotate: 0,
     scaleX: 1,
     scaleY: 1,
+    scaleZ: 1,
     skewX: 0,
     skewY: 0,
     rotateX: 0,
@@ -263,14 +265,65 @@ export default function RightPanel({
   const prevLassoPointsLengthRef = React.useRef(0);
 
   React.useEffect(() => {
+    if (selectedObject?.lassoDeformState?.active && selectedObject.lassoDeformState.transform) {
+      const t = selectedObject.lassoDeformState.transform;
+      setLassoSliders({
+        translateX: t.x || 0,
+        translateY: t.y || 0,
+        translateZ: (t as any).z || 0,
+        rotate: t.rotation || 0,
+        scaleX: t.scaleX ?? 1,
+        scaleY: t.scaleY ?? 1,
+        scaleZ: (t as any).scaleZ ?? 1,
+        skewX: t.skewX || 0,
+        skewY: t.skewY || 0,
+        rotateX: t.rotateX || 0,
+        rotateY: t.rotateY || 0,
+        perspective: t.perspective || 0
+      });
+    } else {
+      setLassoSliders({
+        translateX: 0,
+        translateY: 0,
+        translateZ: 0,
+        rotate: 0,
+        scaleX: 1,
+        scaleY: 1,
+        scaleZ: 1,
+        skewX: 0,
+        skewY: 0,
+        rotateX: 0,
+        rotateY: 0,
+        perspective: 0
+      });
+    }
+  }, [
+    selectedObject?.id,
+    currentFrameIndex,
+    selectedObject?.lassoDeformState?.active,
+    selectedObject?.lassoDeformState?.transform?.x,
+    selectedObject?.lassoDeformState?.transform?.y,
+    selectedObject?.lassoDeformState?.transform?.rotation,
+    selectedObject?.lassoDeformState?.transform?.scaleX,
+    selectedObject?.lassoDeformState?.transform?.scaleY,
+    selectedObject?.lassoDeformState?.transform?.skewX,
+    selectedObject?.lassoDeformState?.transform?.skewY,
+    selectedObject?.lassoDeformState?.transform?.rotateX,
+    selectedObject?.lassoDeformState?.transform?.rotateY,
+    selectedObject?.lassoDeformState?.transform?.perspective
+  ]);
+
+  React.useEffect(() => {
     if (lassoPoints && lassoPoints.length >= 3) {
       if (lassoPoints.length !== prevLassoPointsLengthRef.current) {
         setLassoSliders({
           translateX: 0,
           translateY: 0,
+          translateZ: 0,
           rotate: 0,
           scaleX: 1,
           scaleY: 1,
+          scaleZ: 1,
           skewX: 0,
           skewY: 0,
           rotateX: 0,
@@ -373,11 +426,18 @@ export default function RightPanel({
           WPrime.x += val;
         } else if (transformType === 'translateY') {
           WPrime.y += val;
+        } else if (transformType === 'translateZ') {
+          const scaleZFactor = 1 + val / 500;
+          WPrime.x = center.x + (W.x - center.x) * scaleZFactor;
+          WPrime.y = center.y + (W.y - center.y) * scaleZFactor;
         } else if (transformType === 'rotate') {
           WPrime = rotatePoint(W, val, center);
         } else if (transformType === 'scaleX') {
           WPrime.x = center.x + (W.x - center.x) * val;
         } else if (transformType === 'scaleY') {
+          WPrime.y = center.y + (W.y - center.y) * val;
+        } else if (transformType === 'scaleZ') {
+          WPrime.x = center.x + (W.x - center.x) * val;
           WPrime.y = center.y + (W.y - center.y) * val;
         } else if (transformType === 'skewX') {
           const rad = (val * Math.PI) / 180;
@@ -446,7 +506,7 @@ export default function RightPanel({
       return updated;
     });
 
-    // Update in all other frames if toggle is enabled
+    // Update in all other frames if toggle is enabled, or update current frame keyframe immediately
     if (lassoAllFrames) {
       setFrames(prev => {
         return prev.map(frame => {
@@ -498,19 +558,135 @@ export default function RightPanel({
           return frame;
         });
       });
+    } else {
+      setFrames(prev => {
+        return prev.map((frame, idx) => {
+          if (idx !== currentFrameIndex) return frame;
+          const frameObjects = { ...(frame.objects || {}) };
+          let changed = false;
+
+          Object.keys(map).forEach(objId => {
+            const obj = frameObjects[objId];
+            if (!obj) return;
+
+            changed = true;
+            const { points: insidePoints, subPaths: insideSubPaths } = map[objId];
+            
+            let nextPoints = obj.points ? [...obj.points] : [];
+            insidePoints.forEach(pIdx => {
+              if (nextPoints[pIdx]) {
+                nextPoints[pIdx] = transformPointWithLasso(nextPoints[pIdx], obj, lassoCenter, type, value);
+              }
+            });
+
+            let nextSubPaths = obj.subPaths ? obj.subPaths.map(sub => [...sub]) : undefined;
+            if (nextSubPaths) {
+              Object.keys(insideSubPaths).forEach(subIdxStr => {
+                const subIdx = parseInt(subIdxStr, 10);
+                const indices = insideSubPaths[subIdx];
+                if (nextSubPaths[subIdx]) {
+                  indices.forEach(pIdx => {
+                    if (nextSubPaths[subIdx][pIdx]) {
+                      nextSubPaths[subIdx][pIdx] = transformPointWithLasso(nextSubPaths[subIdx][pIdx], obj, lassoCenter, type, value);
+                    }
+                  });
+                }
+              });
+            }
+
+            frameObjects[objId] = {
+              ...obj,
+              points: nextPoints,
+              subPaths: nextSubPaths
+            };
+          });
+
+          if (changed) {
+            return {
+              ...frame,
+              objects: frameObjects
+            };
+          }
+          return frame;
+        });
+      });
     }
   };
 
-  const handleLassoSliderChange = (type: 'translateX' | 'translateY' | 'rotate' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective', value: number) => {
+  const handleLassoSliderChange = (type: 'translateX' | 'translateY' | 'translateZ' | 'rotate' | 'scaleX' | 'scaleY' | 'scaleZ' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective', value: number) => {
     const prevVal = lassoSliders[type];
     let diff = 0;
-    if (type === 'scaleX' || type === 'scaleY') {
+    if (type === 'scaleX' || type === 'scaleY' || type === 'scaleZ') {
       diff = prevVal !== 0 ? value / prevVal : 1;
     } else {
       diff = value - prevVal;
     }
 
-    applyLassoTransformToAllFrames(type, diff);
+    if (selectedObject?.lassoDeformState?.active) {
+      const currentLassoState = selectedObject.lassoDeformState;
+      const currentTransform = currentLassoState.transform || {
+        x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0
+      };
+      const propMap: Record<string, keyof Transform> = {
+        translateX: 'x', translateY: 'y', rotate: 'rotation', scaleX: 'scaleX', scaleY: 'scaleY', skewX: 'skewX', skewY: 'skewY', rotateX: 'rotateX', rotateY: 'rotateY', perspective: 'perspective'
+      };
+      const targetProp = propMap[type];
+      if (targetProp) {
+        const updatedTransform = {
+          ...currentTransform,
+          [targetProp]: value
+        };
+
+        if (lassoAllFrames) {
+          setFrames(prev => prev.map(frame => {
+            if (!frame.objects || !frame.objects[selectedObject.id]) return frame;
+            const obj = frame.objects[selectedObject.id];
+            if (!obj.lassoDeformState) return frame;
+            return {
+              ...frame,
+              objects: {
+                ...frame.objects,
+                [selectedObject.id]: {
+                  ...obj,
+                  lassoDeformState: {
+                    ...obj.lassoDeformState,
+                    transform: updatedTransform
+                  }
+                }
+              }
+            };
+          }));
+        } else {
+          setFrames(prev => prev.map((frame, idx) => {
+            if (idx !== currentFrameIndex) return frame;
+            if (!frame.objects || !frame.objects[selectedObject.id]) return frame;
+            const obj = frame.objects[selectedObject.id];
+            return {
+              ...frame,
+              objects: {
+                ...frame.objects,
+                [selectedObject.id]: {
+                  ...obj,
+                  lassoDeformState: {
+                    ...(obj.lassoDeformState || currentLassoState),
+                    transform: updatedTransform
+                  }
+                }
+              }
+            };
+          }));
+        }
+
+        updateObject(selectedObject.id, {
+          lassoDeformState: {
+            ...currentLassoState,
+            transform: updatedTransform
+          }
+        });
+      }
+    } else {
+      applyLassoTransformToAllFrames(type, diff);
+    }
 
     setLassoSliders(prev => ({
       ...prev,
@@ -518,9 +694,9 @@ export default function RightPanel({
     }));
   };
 
-  const handleLassoNudge = (type: 'translateX' | 'translateY' | 'rotate' | 'scaleX' | 'scaleY' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective', amount: number) => {
+  const handleLassoNudge = (type: 'translateX' | 'translateY' | 'translateZ' | 'rotate' | 'scaleX' | 'scaleY' | 'scaleZ' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective', amount: number) => {
     let nextVal = lassoSliders[type] + amount;
-    if (type === 'scaleX' || type === 'scaleY') {
+    if (type === 'scaleX' || type === 'scaleY' || type === 'scaleZ') {
       nextVal = Math.max(0.01, Number((lassoSliders[type] + amount).toFixed(2)));
     } else {
       nextVal = Number((lassoSliders[type] + amount).toFixed(2));
@@ -528,15 +704,78 @@ export default function RightPanel({
     handleLassoSliderChange(type, nextVal);
   };
 
-  const isLassoActive = !!selectedObject?.lassoDeformState?.active;
+  const handleLassoRecolor = (fillColor?: string, strokeColor?: string) => {
+    if (!lassoPoints || lassoPoints.length < 3) return;
+    const map = globalLassoSelectedMap;
+    if (Object.keys(map).length === 0) return;
+
+    setObjects(prev => {
+      const updated = { ...prev };
+      Object.keys(map).forEach(objId => {
+        const obj = updated[objId];
+        if (!obj) return;
+
+        const { points: insidePoints, subPaths: insideSubPaths } = map[objId];
+        const nextSubFills = { ...(obj.subPathFills || {}) };
+        const nextSubStrokes = { ...(obj.subPathStrokes || {}) };
+
+        if (fillColor) {
+          Object.keys(insideSubPaths).forEach(subIdxStr => {
+            const subIdx = parseInt(subIdxStr, 10);
+            nextSubFills[subIdx] = fillColor;
+          });
+        }
+
+        if (strokeColor) {
+          Object.keys(insideSubPaths).forEach(subIdxStr => {
+            const subIdx = parseInt(subIdxStr, 10);
+            nextSubStrokes[subIdx] = {
+              strokeColor,
+              strokeWidth: obj.strokeWidth || 3
+            };
+          });
+        }
+
+        const totalPoints = obj.points?.length || 0;
+        const allPointsInside = insidePoints.length >= totalPoints && totalPoints > 0;
+
+        updated[objId] = {
+          ...obj,
+          fillColor: (fillColor && (allPointsInside || !obj.subPaths?.length)) ? fillColor : obj.fillColor,
+          strokeColor: (strokeColor && (allPointsInside || !obj.subPaths?.length)) ? strokeColor : obj.strokeColor,
+          subPathFills: nextSubFills,
+          subPathStrokes: nextSubStrokes,
+          lassoFills: fillColor ? [...(obj.lassoFills || []), { localLassoPoints: lassoPoints.map(wp => worldToLocal(wp, obj.transform, obj.pivots?.[0] || { localX: 0, localY: 0 })), color: fillColor }] : obj.lassoFills
+        };
+      });
+      return updated;
+    });
+  };
+
+  const isLassoActive = (!!lassoPoints && lassoPoints.length >= 3) || !!selectedObject?.lassoDeformState?.active;
   const isDeformPointActive = activeTool === 'MSH' && selectedDeformPointIndex !== undefined && selectedDeformPointIndex !== null;
-  const currentTransformObj = selectedObject 
-    ? (isDeformPointActive
-        ? (deformPointTransform || { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0, cameraAngleX: 0, cameraAngleY: 0 })
-        : (isLassoActive 
-            ? (selectedObject.lassoDeformState?.transform || { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0 })
-            : selectedObject.transform))
-    : null;
+  const currentTransformObj = isLassoActive 
+    ? {
+        x: lassoSliders.translateX,
+        y: lassoSliders.translateY,
+        z: lassoSliders.translateZ,
+        rotation: lassoSliders.rotate,
+        scaleX: lassoSliders.scaleX,
+        scaleY: lassoSliders.scaleY,
+        scaleZ: lassoSliders.scaleZ,
+        skewX: lassoSliders.skewX,
+        skewY: lassoSliders.skewY,
+        rotateX: lassoSliders.rotateX,
+        rotateY: lassoSliders.rotateY,
+        perspective: lassoSliders.perspective,
+        cameraAngleX: lassoSliders.rotateX,
+        cameraAngleY: lassoSliders.rotateY,
+      }
+    : (selectedObject 
+        ? (isDeformPointActive
+            ? (deformPointTransform || { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0, cameraAngleX: 0, cameraAngleY: 0 })
+            : selectedObject.transform)
+        : null);
 
   // AI Smooth Motion & Loop Generator States
   const [animationMode, setAnimationMode] = useState<'single' | 'multi'>('single');
@@ -2013,6 +2252,33 @@ export default function RightPanel({
 
   // Handle value increments/decrements (sliders tap +/- buttons)
   const handleNudge = (property: string, amount: number) => {
+    if (isLassoActive) {
+      const propertyToLassoMap: Record<string, 'translateX' | 'translateY' | 'translateZ' | 'rotate' | 'scaleX' | 'scaleY' | 'scaleZ' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective'> = {
+        x: 'translateX',
+        y: 'translateY',
+        z: 'translateZ',
+        rotation: 'rotate',
+        scaleX: 'scaleX',
+        scaleY: 'scaleY',
+        scaleZ: 'scaleZ',
+        skewX: 'skewX',
+        skewY: 'skewY',
+        rotateX: 'rotateX',
+        rotateY: 'rotateY',
+        cameraAngleX: 'rotateX',
+        cameraAngleY: 'rotateY',
+        perspective: 'perspective',
+        translateX: 'translateX',
+        translateY: 'translateY',
+        translateZ: 'translateZ'
+      };
+      const lassoType = propertyToLassoMap[property];
+      if (lassoType) {
+        handleLassoNudge(lassoType, amount);
+        return;
+      }
+    }
+
     if (!selectedObject) return;
 
     if (isDeformPointActive && updateDeformPointTransform) {
@@ -2087,6 +2353,33 @@ export default function RightPanel({
   };
 
   const handleSliderChange = (property: string, value: number) => {
+    if (isLassoActive) {
+      const propertyToLassoMap: Record<string, 'translateX' | 'translateY' | 'translateZ' | 'rotate' | 'scaleX' | 'scaleY' | 'scaleZ' | 'skewX' | 'skewY' | 'rotateX' | 'rotateY' | 'perspective'> = {
+        x: 'translateX',
+        y: 'translateY',
+        z: 'translateZ',
+        rotation: 'rotate',
+        scaleX: 'scaleX',
+        scaleY: 'scaleY',
+        scaleZ: 'scaleZ',
+        skewX: 'skewX',
+        skewY: 'skewY',
+        rotateX: 'rotateX',
+        rotateY: 'rotateY',
+        cameraAngleX: 'rotateX',
+        cameraAngleY: 'rotateY',
+        perspective: 'perspective',
+        translateX: 'translateX',
+        translateY: 'translateY',
+        translateZ: 'translateZ'
+      };
+      const lassoType = propertyToLassoMap[property];
+      if (lassoType) {
+        handleLassoSliderChange(lassoType, value);
+        return;
+      }
+    }
+
     if (!selectedObject) return;
 
     if (isDeformPointActive && updateDeformPointTransform) {
@@ -2666,250 +2959,42 @@ export default function RightPanel({
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  {/* Translate X */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Translate X</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.translateX.toFixed(1)}px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-500"
-                      max="500"
-                      step="1"
-                      value={lassoSliders.translateX}
-                      onChange={(e) => handleLassoSliderChange('translateX', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('translateX', -10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-10</button>
-                      <button onClick={() => handleLassoNudge('translateX', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1</button>
-                      <button onClick={() => handleLassoNudge('translateX', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1</button>
-                      <button onClick={() => handleLassoNudge('translateX', 10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+10</button>
-                    </div>
+                {/* Area Recoloring Section */}
+                <div className="pt-3 border-t border-neutral-800/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-400 font-mono flex items-center gap-1">
+                      <Palette className="w-3.5 h-3.5" /> Area Color Fill
+                    </span>
                   </div>
-
-                  {/* Translate Y */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Translate Y</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.translateY.toFixed(1)}px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-500"
-                      max="500"
-                      step="1"
-                      value={lassoSliders.translateY}
-                      onChange={(e) => handleLassoSliderChange('translateY', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('translateY', -10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-10</button>
-                      <button onClick={() => handleLassoNudge('translateY', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1</button>
-                      <button onClick={() => handleLassoNudge('translateY', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1</button>
-                      <button onClick={() => handleLassoNudge('translateY', 10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+10</button>
-                    </div>
-                  </div>
-
-                  {/* Rotation */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Rotate Angle</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.rotate.toFixed(1)}°</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-180"
-                      max="180"
-                      step="1"
-                      value={lassoSliders.rotate}
-                      onChange={(e) => handleLassoSliderChange('rotate', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('rotate', -15)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-15°</button>
-                      <button onClick={() => handleLassoNudge('rotate', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
-                      <button onClick={() => handleLassoNudge('rotate', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
-                      <button onClick={() => handleLassoNudge('rotate', 15)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+15°</button>
-                    </div>
-                  </div>
-
-                  {/* Scale X */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Scale X</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.scaleX.toFixed(2)}x</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="3.0"
-                      step="0.01"
-                      value={lassoSliders.scaleX}
-                      onChange={(e) => handleLassoSliderChange('scaleX', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('scaleX', -0.1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-0.1</button>
-                      <button onClick={() => handleLassoNudge('scaleX', -0.01)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-0.01</button>
-                      <button onClick={() => handleLassoNudge('scaleX', 0.01)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+0.01</button>
-                      <button onClick={() => handleLassoNudge('scaleX', 0.1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+0.1</button>
-                    </div>
-                  </div>
-
-                  {/* Scale Y */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Scale Y</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.scaleY.toFixed(2)}x</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="3.0"
-                      step="0.01"
-                      value={lassoSliders.scaleY}
-                      onChange={(e) => handleLassoSliderChange('scaleY', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('scaleY', -0.1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-0.1</button>
-                      <button onClick={() => handleLassoNudge('scaleY', -0.01)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-0.01</button>
-                      <button onClick={() => handleLassoNudge('scaleY', 0.01)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+0.01</button>
-                      <button onClick={() => handleLassoNudge('scaleY', 0.1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+0.1</button>
-                    </div>
-                  </div>
-
-                  {/* Skew X */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Skew X</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.skewX.toFixed(1)}°</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-90"
-                      max="90"
-                      step="1"
-                      value={lassoSliders.skewX}
-                      onChange={(e) => handleLassoSliderChange('skewX', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('skewX', -5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-5°</button>
-                      <button onClick={() => handleLassoNudge('skewX', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
-                      <button onClick={() => handleLassoNudge('skewX', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
-                      <button onClick={() => handleLassoNudge('skewX', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
-                    </div>
-                  </div>
-
-                  {/* Skew Y */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Skew Y</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.skewY.toFixed(1)}°</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-90"
-                      max="90"
-                      step="1"
-                      value={lassoSliders.skewY}
-                      onChange={(e) => handleLassoSliderChange('skewY', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('skewY', -5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-5°</button>
-                      <button onClick={() => handleLassoNudge('skewY', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
-                      <button onClick={() => handleLassoNudge('skewY', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
-                      <button onClick={() => handleLassoNudge('skewY', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
-                    </div>
-                  </div>
-
-                  {/* 3D Transformation Divider */}
-                  <div className="pt-2 border-t border-neutral-800/40">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-500/80 font-mono">3D Transform</span>
-                  </div>
-
-                  {/* Rotate X */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Rotate X (3D)</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.rotateX.toFixed(1)}°</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-90"
-                      max="90"
-                      step="1"
-                      value={lassoSliders.rotateX}
-                      onChange={(e) => handleLassoSliderChange('rotateX', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('rotateX', -5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-5°</button>
-                      <button onClick={() => handleLassoNudge('rotateX', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
-                      <button onClick={() => handleLassoNudge('rotateX', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
-                      <button onClick={() => handleLassoNudge('rotateX', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
-                    </div>
-                  </div>
-
-                  {/* Rotate Y */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Rotate Y (3D)</span>
-                      <span className="text-white font-bold font-mono">{lassoSliders.rotateY.toFixed(1)}°</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-90"
-                      max="90"
-                      step="1"
-                      value={lassoSliders.rotateY}
-                      onChange={(e) => handleLassoSliderChange('rotateY', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('rotateY', -5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-5°</button>
-                      <button onClick={() => handleLassoNudge('rotateY', -1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-1°</button>
-                      <button onClick={() => handleLassoNudge('rotateY', 1)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+1°</button>
-                      <button onClick={() => handleLassoNudge('rotateY', 5)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+5°</button>
-                    </div>
-                  </div>
-
-                  {/* Perspective */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-neutral-400 font-mono">Perspective</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-white font-bold font-mono">{lassoSliders.perspective}</span>
-                        {lassoSliders.perspective !== 0 && (
-                          <button
-                            onClick={() => handleLassoSliderChange('perspective', 0)}
-                            className="text-[9px] font-black text-amber-400/80 hover:text-amber-300 cursor-pointer underline decoration-dotted"
-                          >
-                            RESET
-                          </button>
+                  <div className="grid grid-cols-5 gap-1.5 pt-1">
+                    {['#E53935', '#F59E0B', '#10B981', '#06B6D4', '#3B82F6', '#8B5CF6', '#EC4899', '#FFFFFF', '#171717', 'transparent'].map(color => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => handleLassoRecolor(color, undefined)}
+                        className="h-6 rounded-lg border border-neutral-700/80 hover:scale-105 transition-transform cursor-pointer relative shadow-sm"
+                        style={{ backgroundColor: color === 'transparent' ? '#262626' : color }}
+                        title={`Recolor area fill to ${color}`}
+                      >
+                        {color === 'transparent' && (
+                          <span className="absolute inset-0 flex items-center justify-center text-[9px] text-neutral-500 font-bold">Ø</span>
                         )}
-                      </div>
-                    </div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <label className="text-[10px] text-neutral-400 font-mono">Custom Fill:</label>
                     <input
-                      type="range"
-                      min="0"
-                      max="1000"
-                      step="10"
-                      value={lassoSliders.perspective}
-                      onChange={(e) => handleLassoSliderChange('perspective', Number(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer"
+                      type="color"
+                      onChange={(e) => handleLassoRecolor(e.target.value, undefined)}
+                      className="w-7 h-7 bg-transparent border border-neutral-700 rounded cursor-pointer"
                     />
-                    <div className="flex items-center justify-between gap-1 pt-0.5">
-                      <button onClick={() => handleLassoNudge('perspective', -50)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-50</button>
-                      <button onClick={() => handleLassoNudge('perspective', -10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">-10</button>
-                      <button onClick={() => handleLassoNudge('perspective', 10)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+10</button>
-                      <button onClick={() => handleLassoNudge('perspective', 50)} className="flex-1 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[9px] font-bold cursor-pointer">+50</button>
-                    </div>
+                    <label className="text-[10px] text-neutral-400 font-mono ml-2">Stroke:</label>
+                    <input
+                      type="color"
+                      onChange={(e) => handleLassoRecolor(undefined, e.target.value)}
+                      className="w-7 h-7 bg-transparent border border-neutral-700 rounded cursor-pointer"
+                    />
                   </div>
                 </div>
               </div>
@@ -3068,15 +3153,30 @@ export default function RightPanel({
                             // Convert world lassoPoints to local coordinates of the selected object
                             const localLassoPoints = lassoPoints.map(wp => worldToLocal(wp, selectedObject.transform, localPivot));
                             
-                            updateObject(selectedObject.id, {
-                              lassoDeformState: {
-                                active: true,
-                                lassoPoints: localLassoPoints,
-                                transform: selectedObject.lassoDeformState?.transform || {
-                                  x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0
-                                }
+                            const newDeformState = {
+                              active: true,
+                              lassoPoints: localLassoPoints,
+                              transform: selectedObject.lassoDeformState?.transform || {
+                                x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0
                               }
+                            };
+                            updateObject(selectedObject.id, {
+                              lassoDeformState: newDeformState
                             });
+                            setFrames(prev => prev.map((frame, idx) => {
+                              if (idx !== currentFrameIndex) return frame;
+                              if (!frame.objects || !frame.objects[selectedObject.id]) return frame;
+                              return {
+                                ...frame,
+                                objects: {
+                                  ...frame.objects,
+                                  [selectedObject.id]: {
+                                    ...frame.objects[selectedObject.id],
+                                    lassoDeformState: newDeformState
+                                  }
+                                }
+                              };
+                            }));
                           }}
                           className="flex-1 py-2 bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[10px] font-black rounded-lg transition-all uppercase tracking-wider disabled:opacity-30 disabled:pointer-events-none"
                         >
@@ -7732,11 +7832,11 @@ export default function RightPanel({
                 </div>
 
                 {/* Smooth X, Y Sliders (always visible, disabled if not independent or closed rigged) */}
-                {selectedObject && (() => {
-                  const isRigged = !!selectedObject.parentId || bones.some(b => b.startObjectId === selectedObject.id || b.endObjectId === selectedObject.id);
-                  const hasClosedEdgesSelf = selectedObject.type === 'shape' && selectedObject.shapeType !== 'line';
-                  const hasClosedEdgesParent = !!(selectedObject.parentId && objects[selectedObject.parentId] && objects[selectedObject.parentId].type === 'shape' && objects[selectedObject.parentId].shapeType !== 'line');
-                  const isSmoothMoveEnabled = !isRigged || hasClosedEdgesSelf || hasClosedEdgesParent;
+                {(selectedObject || isLassoActive) && (() => {
+                  const isRigged = selectedObject ? (!!selectedObject.parentId || bones.some(b => b.startObjectId === selectedObject.id || b.endObjectId === selectedObject.id)) : false;
+                  const hasClosedEdgesSelf = selectedObject ? (selectedObject.type === 'shape' && selectedObject.shapeType !== 'line') : false;
+                  const hasClosedEdgesParent = selectedObject ? !!(selectedObject.parentId && objects[selectedObject.parentId] && objects[selectedObject.parentId].type === 'shape' && objects[selectedObject.parentId].shapeType !== 'line') : false;
+                  const isSmoothMoveEnabled = isLassoActive || !isRigged || hasClosedEdgesSelf || hasClosedEdgesParent;
 
                   return (
                     <div className={`space-y-4 bg-amber-500/5 p-4 rounded-2xl border transition-all duration-300 shadow-lg shadow-black/20 ${

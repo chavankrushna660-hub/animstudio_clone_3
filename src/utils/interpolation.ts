@@ -255,6 +255,35 @@ export const interpolateTwoObjects = (startObj: VectorObject, endObj: VectorObje
     });
   }
 
+  // Interpolate LassoDeformState transform across keyframes
+  let lassoDeformState = startObj.lassoDeformState;
+  if (startObj.lassoDeformState || endObj.lassoDeformState) {
+    const startState = startObj.lassoDeformState;
+    const endState = endObj.lassoDeformState;
+    const identityT: Transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0 };
+
+    if (startState?.active && endState?.active) {
+      const sT = startState.transform || identityT;
+      const eT = endState.transform || identityT;
+      lassoDeformState = {
+        ...startState,
+        transform: interpolateTransform(sT, eT, t)
+      };
+    } else if (startState?.active && (!endState || !endState.active)) {
+      const sT = startState.transform || identityT;
+      lassoDeformState = {
+        ...startState,
+        transform: interpolateTransform(sT, identityT, t)
+      };
+    } else if (endState?.active && (!startState || !startState.active)) {
+      const eT = endState.transform || identityT;
+      lassoDeformState = {
+        ...endState,
+        transform: interpolateTransform(identityT, eT, t)
+      };
+    }
+  }
+
   return {
     ...startObj,
     transform: interpolatedTransform,
@@ -269,6 +298,7 @@ export const interpolateTwoObjects = (startObj: VectorObject, endObj: VectorObje
     transform3D,
     vertices3D,
     lassoControlPoints,
+    lassoDeformState,
     splineControlPoints,
     splineTwistPoints,
     splinePoints,

@@ -57,6 +57,7 @@ import {
 } from './utils/engine3D';
 import { safeJsonParse } from './utils/securityGuard';
 import { extractPNGSilhouetteContour } from './utils/pngSilhouette';
+import { getInterpolatedObjects } from './utils/interpolation';
 
 export function transformDeformPoint(
   orig: { x: number; y: number; z?: number },
@@ -1191,6 +1192,11 @@ export default function App() {
     objectsRef.current = objects;
   }, [objects]);
 
+  const autoTweenRef = useRef(autoTween);
+  useEffect(() => {
+    autoTweenRef.current = autoTween;
+  }, [autoTween]);
+
   // Keep a stable reference to the frames array to break the feedback loop during rapid dragging
   const framesRef = useRef(frames);
   useEffect(() => {
@@ -1230,7 +1236,8 @@ export default function App() {
       const targetFrame = framesRef.current[currentFrameIndex];
       if (targetFrame) {
         const frameObjects = targetFrame.objects || {};
-        const frameObjectsStr = JSON.stringify(frameObjects);
+        const activeObjects = autoTweenRef.current ? getInterpolatedObjects(framesRef.current, currentFrameIndex, frameObjects) : frameObjects;
+        const frameObjectsStr = JSON.stringify(activeObjects);
 
         setObjects(JSON.parse(frameObjectsStr));
         lastSyncedObjectsRef.current = frameObjectsStr;
@@ -1532,6 +1539,27 @@ export default function App() {
                       }
                     } else {
                       dest.pins = undefined;
+                    }
+
+                    // Sync lassoDeformState active state and points, preserving individual frame transform for keyframing
+                    if (src.lassoDeformState !== undefined) {
+                      if (dest.lassoDeformState === undefined) {
+                        dest.lassoDeformState = {
+                          active: src.lassoDeformState.active,
+                          lassoPoints: src.lassoDeformState.lassoPoints ? JSON.parse(JSON.stringify(src.lassoDeformState.lassoPoints)) : [],
+                          transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0 }
+                        };
+                      } else {
+                        dest.lassoDeformState.active = src.lassoDeformState.active;
+                        if (src.lassoDeformState.lassoPoints !== undefined) {
+                          dest.lassoDeformState.lassoPoints = JSON.parse(JSON.stringify(src.lassoDeformState.lassoPoints));
+                        }
+                        if (dest.lassoDeformState.transform === undefined) {
+                          dest.lassoDeformState.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, skewX: 0, skewY: 0, rotateX: 0, rotateY: 0, perspective: 0 };
+                        }
+                      }
+                    } else {
+                      dest.lassoDeformState = undefined;
                     }
                     
                     // DO NOT sync pivots to other frames, as these represent animatable keyframe values that should be recorded uniquely on each frame!
