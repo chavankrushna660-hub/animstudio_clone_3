@@ -86,7 +86,7 @@ export default function Timeline({
               if (loopEnabled) {
                 return 0; // Loop back
               } else {
-                setIsPlaying(false);
+                setTimeout(() => setIsPlaying(false), 0);
                 return prevIndex;
               }
             }
@@ -94,7 +94,7 @@ export default function Timeline({
           });
         } catch (err) {
           console.error("Playback loop error caught safely:", err);
-          setIsPlaying(false);
+          setTimeout(() => setIsPlaying(false), 0);
         }
       }, intervalMs);
     } else {

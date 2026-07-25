@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { RotateCcw, Sparkles, Feather, ZoomIn, ZoomOut, Maximize2, Activity } from 'lucide-react';
-import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings, CurvePathState, FlexCurveState, FlexCurveControlPoint } from '../types';
+import { RotateCcw, Sparkles, Feather, ZoomIn, ZoomOut, Maximize2, Activity, GitCommit } from 'lucide-react';
+import { Point, VectorObject, Bone, Pivot, Frame, Transform, RealismSettings, LassoControlPoint, SmartWarpPin, BrushSettings, LiquifyBrushSettings, CurvePathState, FlexCurveState, FlexCurveControlPoint, CustomVectorDeformNode, CustomVectorDeformState } from '../types';
+import { calculateCustomVectorDeformedPoints } from '../utils/vectorDeform';
 import { transform3DVertex, transform3DVertices, project3DVertex, getFaceLightColor, deformVertices3D } from '../utils/engine3D';
 import { Renderer3D } from '../utils/extruded3D';
 import { 
@@ -3159,6 +3160,78 @@ export default function CanvasArea({
       return;
     }
 
+    // VDF (Vector Deformation Tool) pointer down logic
+    if (activeTool === 'VDF') {
+      let activeId = selectedObjectId;
+      if (!activeId) {
+        const clickedObj = performHitTest(coords);
+        if (clickedObj) {
+          setSelectedObjectId(clickedObj.id);
+          activeId = clickedObj.id;
+        }
+      }
+
+      if (activeId && objects[activeId]) {
+        const obj = objects[activeId];
+        const vdfState: CustomVectorDeformState = obj.customVectorDeformState || {
+          active: true,
+          isDrawingPhase: true,
+          nodes: [],
+          stiffness: 30
+        };
+
+        // Check if user clicked an existing vector node
+        let clickedNodeIdx = -1;
+        let minDist = 22 / zoomScale;
+        (vdfState.nodes || []).forEach((n, idx) => {
+          const d = distance(coords, { x: n.x, y: n.y });
+          if (d < minDist) {
+            minDist = d;
+            clickedNodeIdx = idx;
+          }
+        });
+
+        if (clickedNodeIdx !== -1) {
+          setDragMode('vdf-node' as any);
+          setDraggedMeshPointIndex(clickedNodeIdx);
+          setDragStartPoint(coords);
+          historyPush();
+          return;
+        }
+
+        // If in Drawing Phase, place a new vector point!
+        if (vdfState.isDrawingPhase) {
+          const newNode: CustomVectorDeformNode = {
+            id: `vdf_node_${Date.now()}_${(vdfState.nodes || []).length}`,
+            x: coords.x,
+            y: coords.y,
+            origX: coords.x,
+            origY: coords.y
+          };
+          const updatedNodes = [...(vdfState.nodes || []), newNode];
+
+          setObjects(prev => ({
+            ...prev,
+            [activeId!]: {
+              ...prev[activeId!],
+              customVectorDeformState: {
+                ...vdfState,
+                active: true,
+                nodes: updatedNodes
+              }
+            }
+          }));
+
+          setDragMode('vdf-node' as any);
+          setDraggedMeshPointIndex(updatedNodes.length - 1);
+          setDragStartPoint(coords);
+          historyPush();
+          return;
+        }
+      }
+      return;
+    }
+
     // LQB (Liquify Brush) tool pointer down logic
     if (activeTool === 'LQB') {
       let activeId = selectedObjectId;
@@ -3599,6 +3672,49 @@ export default function CanvasArea({
           };
         });
       }
+      return;
+    }
+
+    if (dragMode === 'vdf-node' && selectedObjectId && draggedMeshPointIndex !== null && draggedMeshPointIndex !== undefined) {
+      setObjects(prev => {
+        const targetObj = prev[selectedObjectId];
+        if (!targetObj) return prev;
+        const vdfState = targetObj.customVectorDeformState;
+        if (!vdfState || !vdfState.nodes || !vdfState.nodes[draggedMeshPointIndex]) return prev;
+
+        const nodeIdx = draggedMeshPointIndex;
+        const updatedNodes = vdfState.nodes.map((node, idx) => {
+          if (idx === nodeIdx) {
+            return {
+              ...node,
+              x: coords.x,
+              y: coords.y,
+              ...(vdfState.isDrawingPhase ? { origX: coords.x, origY: coords.y } : {})
+            };
+          }
+          return node;
+        });
+
+        let updatedPoints = targetObj.points;
+        const origPts = vdfState.origObjectPoints || targetObj.points;
+
+        if (!vdfState.isDrawingPhase && origPts && origPts.length > 0) {
+          updatedPoints = calculateCustomVectorDeformedPoints(origPts, updatedNodes, vdfState.stiffness || 30);
+        }
+
+        return {
+          ...prev,
+          [selectedObjectId]: {
+            ...targetObj,
+            points: updatedPoints,
+            customVectorDeformState: {
+              ...vdfState,
+              nodes: updatedNodes,
+              origObjectPoints: origPts
+            }
+          }
+        };
+      });
       return;
     }
 
@@ -6669,6 +6785,76 @@ export default function CanvasArea({
       }
     }
 
+    // VDF (Vector Deformer) overlay rendering
+    if ((activeTool === 'VDF' || (effectiveSelectedObjectId && objects[effectiveSelectedObjectId]?.customVectorDeformState?.active)) && effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
+      const obj = objects[effectiveSelectedObjectId];
+      if (obj.customVectorDeformState && obj.customVectorDeformState.active && obj.customVectorDeformState.nodes) {
+        const vdfState = obj.customVectorDeformState;
+        const nodes = vdfState.nodes || [];
+        const isDrawingPhase = vdfState.isDrawingPhase;
+
+        ctx.save();
+
+        // 1. Draw backbone connecting vector nodes
+        if (nodes.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(nodes[0].x, nodes[0].y);
+          for (let i = 1; i < nodes.length; i++) {
+            ctx.lineTo(nodes[i].x, nodes[i].y);
+          }
+
+          if (isDrawingPhase) {
+            ctx.strokeStyle = '#F59E0B'; // Amber line during drawing
+            ctx.lineWidth = 2.5 / zoomScale;
+            ctx.setLineDash([6 / zoomScale, 4 / zoomScale]);
+          } else {
+            ctx.strokeStyle = '#10B981'; // Emerald line during deform
+            ctx.lineWidth = 3.5 / zoomScale;
+            ctx.shadowColor = '#10B981';
+            ctx.shadowBlur = 8 / zoomScale;
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.shadowBlur = 0;
+        }
+
+        // 2. Draw handles for each vector node
+        nodes.forEach((node, idx) => {
+          const isDragging = (dragMode === 'vdf-node' && draggedMeshPointIndex === idx);
+          const r = isDragging ? 10 : 7;
+
+          // Outer halo
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, (r + 4) / zoomScale, 0, Math.PI * 2);
+          ctx.fillStyle = isDrawingPhase ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)';
+          ctx.fill();
+
+          // Main circle
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r / zoomScale, 0, Math.PI * 2);
+          ctx.fillStyle = isDragging
+            ? (isDrawingPhase ? '#FBBF24' : '#34D399')
+            : (isDrawingPhase ? '#F59E0B' : '#10B981');
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 2 / zoomScale;
+          ctx.fill();
+          ctx.stroke();
+
+          // Draw node index label badge above node
+          ctx.fillStyle = '#FFFFFF';
+          ctx.shadowColor = '#000000';
+          ctx.shadowBlur = 4 / zoomScale;
+          ctx.font = `bold ${Math.max(10, Math.min(14, 11 / zoomScale))}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(`Pt #${idx + 1}`, node.x, node.y - (12 / zoomScale));
+          ctx.shadowBlur = 0;
+        });
+
+        ctx.restore();
+      }
+    }
+
     // Render active Smart Mesh Coloring overlay (mesh grid, dots, brush cursor preview)
     if (activeTool === 'MCL' && effectiveSelectedObjectId && objects[effectiveSelectedObjectId]) {
       const obj = objects[effectiveSelectedObjectId];
@@ -7269,6 +7455,107 @@ export default function CanvasArea({
     isRecording
   ]);
 
+  const handleVdfDoneAndBind = (objId: string) => {
+    setObjects(prev => {
+      const targetObj = prev[objId];
+      if (!targetObj || !targetObj.customVectorDeformState) return prev;
+      const vdfState = targetObj.customVectorDeformState;
+      if (!vdfState.nodes || vdfState.nodes.length < 2) {
+        alert("Please place at least 2 vector points on the drawing first.");
+        return prev;
+      }
+      const frozenNodes = vdfState.nodes.map(n => ({
+        ...n,
+        origX: n.x,
+        origY: n.y
+      }));
+      return {
+        ...prev,
+        [objId]: {
+          ...targetObj,
+          customVectorDeformState: {
+            ...vdfState,
+            isDrawingPhase: false,
+            nodes: frozenNodes,
+            origObjectPoints: JSON.parse(JSON.stringify(targetObj.points))
+          }
+        }
+      };
+    });
+  };
+
+  const handleVdfResetNodes = (objId: string) => {
+    setObjects(prev => {
+      const targetObj = prev[objId];
+      if (!targetObj || !targetObj.customVectorDeformState) return prev;
+      const vdfState = targetObj.customVectorDeformState;
+      if (!vdfState.nodes) return prev;
+      const resetNodes = vdfState.nodes.map(n => ({ ...n, x: n.origX, y: n.origY }));
+      const restoredPoints = vdfState.origObjectPoints ? JSON.parse(JSON.stringify(vdfState.origObjectPoints)) : targetObj.points;
+      return {
+        ...prev,
+        [objId]: {
+          ...targetObj,
+          points: restoredPoints,
+          customVectorDeformState: {
+            ...vdfState,
+            nodes: resetNodes
+          }
+        }
+      };
+    });
+  };
+
+  const handleVdfEditNodes = (objId: string) => {
+    setObjects(prev => {
+      const targetObj = prev[objId];
+      if (!targetObj || !targetObj.customVectorDeformState) return prev;
+      const vdfState = targetObj.customVectorDeformState;
+      return {
+        ...prev,
+        [objId]: {
+          ...targetObj,
+          customVectorDeformState: {
+            ...vdfState,
+            isDrawingPhase: true
+          }
+        }
+      };
+    });
+  };
+
+  const handleVdfBakeDeformation = (objId: string) => {
+    setObjects(prev => {
+      const targetObj = prev[objId];
+      if (!targetObj) return prev;
+      return {
+        ...prev,
+        [objId]: {
+          ...targetObj,
+          customVectorDeformState: undefined
+        }
+      };
+    });
+  };
+
+  const handleVdfClearPoints = (objId: string) => {
+    setObjects(prev => {
+      const targetObj = prev[objId];
+      if (!targetObj || !targetObj.customVectorDeformState) return prev;
+      return {
+        ...prev,
+        [objId]: {
+          ...targetObj,
+          customVectorDeformState: {
+            ...targetObj.customVectorDeformState,
+            nodes: [],
+            isDrawingPhase: true
+          }
+        }
+      };
+    });
+  };
+
   return (
     <div ref={containerRef} className="flex-1 bg-white relative overflow-hidden select-none">
       {/* Double canvas layout for background / overlays optimization */}
@@ -7572,6 +7859,108 @@ export default function CanvasArea({
                 >
                   + Node
                 </button>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Floating Vector Curve Deformer (VDF) HUD */}
+      {(activeTool === 'VDF' || (effectiveSelectedObjectId && objects[effectiveSelectedObjectId]?.customVectorDeformState?.active)) && (
+        <div id="canvas-vdf-mode-hud" className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-neutral-900/95 backdrop-blur-md px-5 py-2.5 rounded-2xl border border-amber-500/30 shadow-2xl pointer-events-auto z-50 animate-fade-in text-white text-xs">
+          <span className="text-[11px] text-amber-400 font-black uppercase tracking-wider flex items-center gap-1.5 border-r border-neutral-800 pr-3 font-mono">
+            <GitCommit className="w-4 h-4 text-amber-400 animate-pulse" />
+            Vector Curve Deformer
+          </span>
+
+          {(() => {
+            const activeObj = effectiveSelectedObjectId ? objects[effectiveSelectedObjectId] : null;
+            if (!activeObj) {
+              return (
+                <span className="text-[11px] text-neutral-400 font-bold">
+                  Click a drawing to select & place vector curve points!
+                </span>
+              );
+            }
+            const vdfState = activeObj.customVectorDeformState || {
+              active: true,
+              isDrawingPhase: true,
+              nodes: [],
+              stiffness: 30
+            };
+
+            const count = vdfState.nodes ? vdfState.nodes.length : 0;
+
+            return (
+              <div className="flex items-center gap-2">
+                {vdfState.isDrawingPhase ? (
+                  <>
+                    <span className="text-[10px] text-amber-300 font-mono font-bold bg-amber-500/10 px-2 py-1 rounded-lg border border-amber-500/20">
+                      Points Placed: {count}
+                    </span>
+                    <span className="text-[10px] text-neutral-300 font-medium hidden sm:inline">
+                      Click drawing to add vector points:
+                    </span>
+                    <button
+                      type="button"
+                      id="canvas-vdf-done-btn"
+                      onClick={() => handleVdfDoneAndBind(effectiveSelectedObjectId!)}
+                      disabled={count < 2}
+                      className={`px-3.5 py-1.5 font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg flex items-center gap-1.5 cursor-pointer ${
+                        count >= 2
+                          ? 'bg-gradient-to-r from-amber-500 to-emerald-500 hover:from-amber-400 hover:to-emerald-400 text-neutral-950 shadow-amber-500/20'
+                          : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Done & Bind Path
+                    </button>
+                    {count > 0 && (
+                      <button
+                        type="button"
+                        id="canvas-vdf-clear-btn"
+                        onClick={() => handleVdfClearPoints(effectiveSelectedObjectId!)}
+                        className="px-2.5 py-1 bg-neutral-800 hover:bg-red-500/20 hover:text-red-300 text-neutral-300 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1 bg-emerald-500/10 px-2 py-1 rounded-lg border border-emerald-500/20">
+                      🟢 Ready to Deform & Blend! Drag nodes ({count} points)
+                    </span>
+                    <button
+                      type="button"
+                      id="canvas-vdf-reset-btn"
+                      onClick={() => handleVdfResetNodes(effectiveSelectedObjectId!)}
+                      className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1"
+                      title="Reset nodes back to original rest shape"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Reset Shape
+                    </button>
+                    <button
+                      type="button"
+                      id="canvas-vdf-edit-btn"
+                      onClick={() => handleVdfEditNodes(effectiveSelectedObjectId!)}
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                      title="Add or move vector points on path"
+                    >
+                      Edit Points
+                    </button>
+                    <button
+                      type="button"
+                      id="canvas-vdf-bake-btn"
+                      onClick={() => handleVdfBakeDeformation(effectiveSelectedObjectId!)}
+                      className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                      title="Bake deformed points permanently into drawing"
+                    >
+                      Bake
+                    </button>
+                  </>
+                )}
               </div>
             );
           })()}

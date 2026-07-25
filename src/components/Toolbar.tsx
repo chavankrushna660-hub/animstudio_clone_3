@@ -61,6 +61,7 @@ export default function Toolbar({
     { id: 'CON', name: 'Constraint', label: 'Constraints (CON)', icon: AlignCenterIcon },
     { id: 'MOT', name: 'Motion Path', label: 'Motion Path (MOT)', icon: TrendingUpIcon },
     { id: 'CPT', name: 'Curve Path', label: 'Curve Path Tool (CPT)', icon: GitForkIcon, desc: 'Warp and blend drawing along interactive horizontal and vertical spine lines' },
+    { id: 'VDF', name: 'Vector Curve Deformer', label: 'Vector Deformer (VDF)', icon: GitCommit, desc: 'Draw custom vector points by hand across drawing and drag points to deform and blend' },
     { id: 'CRV', name: 'Curve Line Deformer', label: 'Curve Line Deformer (CRV)', icon: ActivityIcon, desc: 'Flexible curve line overlay to bend and attach to specific drawing parts like tail, arm, leg seamlessly' },
     { id: 'EYE', name: 'Eyedropper', label: 'Eyedropper (EYE)', icon: EyedropperIcon },
     { id: 'ZOM', name: 'Zoom & Pan', label: 'Zoom & Pan (ZOM)', icon: ZoomInIcon, desc: 'Pinch with two fingers to zoom, or drag with single touch/pointer to pan smoothly in any direction.' },

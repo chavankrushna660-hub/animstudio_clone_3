@@ -32,8 +32,11 @@ import {
   MapPin,
   Scissors,
   GitFork,
-  Activity
+  Activity,
+  GitCommit,
+  RotateCcw
 } from 'lucide-react';
+import { calculateCustomVectorDeformedPoints } from '../utils/vectorDeform';
 import { VectorObject, Bone, Layer, Pivot, Transform, Point, Frame, RealismSettings, SmartMeshColorState, SmartWarpState, ColorMeshPoint, ColorMeshCell, BrushSettings, LiquifyBrushSettings, SubExtrusion } from '../types';
 import { distance, localToWorld, worldToLocal, calculateBoundingBox, isPointInPolygon, findClosestView360, rotatePoint, finalizeContinuousObject, extractAllSubPaths, unifyStrokesToSinglePath } from '../utils/math';
 import { extrude2DTo3D, deleteFace3D, extrudeFace3D, extrudeEdge3D } from '../utils/engine3D';
@@ -338,12 +341,10 @@ export default function RightPanel({
         setGlobalLassoSelectedMap(map);
       }
     } else {
-      if (Object.keys(globalLassoSelectedMap).length > 0) {
-        setGlobalLassoSelectedMap({});
-      }
+      setGlobalLassoSelectedMap(prev => Object.keys(prev).length > 0 ? {} : prev);
     }
     prevLassoPointsLengthRef.current = lassoPoints ? lassoPoints.length : 0;
-  }, [lassoPoints, globalLassoSelectedMap]);
+  }, [lassoPoints]);
 
   const applyLassoTransformToAllFrames = (type: string, value: number) => {
     if (!lassoPoints || lassoPoints.length < 3) return;
@@ -550,16 +551,16 @@ export default function RightPanel({
 
   // Sync default frame limits when frames length changes
   React.useEffect(() => {
-    if (singleEndFrame === 0 || singleEndFrame >= frames.length) {
+    if (singleEndFrame >= frames.length) {
       setSingleEndFrame(Math.max(0, frames.length - 1));
     }
-    if (multiRefEndFrame === 0 || multiRefEndFrame >= frames.length) {
-      setMultiRefEndFrame(Math.max(0, Math.max(0, frames.length - 2)));
+    if (multiRefEndFrame >= frames.length) {
+      setMultiRefEndFrame(Math.max(0, frames.length - 2));
     }
-    if (multiEndPosFrame === 0 || multiEndPosFrame >= frames.length) {
+    if (multiEndPosFrame >= frames.length) {
       setMultiEndPosFrame(Math.max(0, frames.length - 1));
     }
-  }, [frames.length]);
+  }, [frames.length, singleEndFrame, multiRefEndFrame, multiEndPosFrame]);
   
   // Opposite Controls State
   const [oppositeSection1, setOppositeSection1] = useState<string[]>([]);
@@ -4719,6 +4720,188 @@ export default function RightPanel({
                         >
                           ✓ Complete & Return to Select
                         </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* VECTOR CURVE DEFORMER PANEL (VDF) */}
+                {activeTool === 'VDF' && (
+                  <div className="space-y-4 bg-amber-500/5 p-4 rounded-2xl border border-amber-400/20 shadow-lg shadow-black/20 animate-fade-in">
+                    <div className="flex items-center justify-between border-b border-amber-500/10 pb-2.5">
+                      <span className="text-xs font-black uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                        <GitCommit className="w-4 h-4 text-amber-500" />
+                        VECTOR CURVE DEFORMER
+                      </span>
+                    </div>
+
+                    {!selectedObject ? (
+                      <p className="text-[10px] text-neutral-400 font-bold leading-normal">
+                        Select a drawing on canvas to place custom vector curve points by hand!
+                      </p>
+                    ) : (
+                      <div className="space-y-3.5 text-xs">
+                        <p className="text-[10px] text-neutral-300 leading-normal font-medium">
+                          Click directly on your drawing like a vector pen to place points (e.g. V-shape bird, tail, character limbs). Click <b>Done & Bind</b> to enable smooth point-to-point deformation and blending!
+                        </p>
+
+                        {(() => {
+                          const vdfState = selectedObject.customVectorDeformState || {
+                            active: true,
+                            isDrawingPhase: true,
+                            nodes: [],
+                            stiffness: 30
+                          };
+
+                          const nodeCount = vdfState.nodes ? vdfState.nodes.length : 0;
+
+                          return (
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between bg-neutral-900/80 p-2.5 rounded-xl border border-neutral-800">
+                                <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider">Vector Points</span>
+                                <span className="text-xs font-mono font-black text-amber-400">{nodeCount} Nodes</span>
+                              </div>
+
+                              {vdfState.isDrawingPhase ? (
+                                <div className="space-y-2">
+                                  <button
+                                    type="button"
+                                    id="rightpanel-vdf-done-btn"
+                                    disabled={nodeCount < 2}
+                                    onClick={() => {
+                                      if (nodeCount < 2) return;
+                                      const frozenNodes = vdfState.nodes.map(n => ({
+                                        ...n,
+                                        origX: n.x,
+                                        origY: n.y
+                                      }));
+                                      updateObject(selectedObject.id, {
+                                        customVectorDeformState: {
+                                          ...vdfState,
+                                          isDrawingPhase: false,
+                                          nodes: frozenNodes,
+                                          origObjectPoints: JSON.parse(JSON.stringify(selectedObject.points))
+                                        }
+                                      });
+                                    }}
+                                    className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                                      nodeCount >= 2
+                                        ? 'bg-gradient-to-r from-amber-500 to-emerald-500 text-neutral-950 shadow-lg shadow-amber-500/20 hover:brightness-110 cursor-pointer'
+                                        : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+                                    }`}
+                                  >
+                                    <Sparkles className="w-4 h-4" />
+                                    Done & Bind Vector Path
+                                  </button>
+
+                                  {nodeCount > 0 && (
+                                    <button
+                                      type="button"
+                                      id="rightpanel-vdf-clear-btn"
+                                      onClick={() => {
+                                        updateObject(selectedObject.id, {
+                                          customVectorDeformState: {
+                                            ...vdfState,
+                                            nodes: [],
+                                            isDrawingPhase: true
+                                          }
+                                        });
+                                      }}
+                                      className="w-full py-1.5 bg-neutral-800 hover:bg-red-500/20 text-neutral-300 hover:text-red-300 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                    >
+                                      Clear Placed Points
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="space-y-2.5">
+                                  <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-xl text-[10px] text-emerald-300 font-bold text-center">
+                                    🟢 Path Bound! Drag any vector node on canvas to warp & blend drawing smoothly.
+                                  </div>
+
+                                  {/* Deformation Stiffness Slider */}
+                                  <div className="space-y-1.5 bg-neutral-900/60 p-2.5 rounded-xl border border-neutral-800">
+                                    <div className="flex justify-between items-center text-[10px]">
+                                      <span className="text-neutral-400 font-bold uppercase tracking-wider">Deformation Stiffness</span>
+                                      <span className="font-mono text-amber-400 font-black">{vdfState.stiffness || 30}px</span>
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min="10"
+                                      max="150"
+                                      step="5"
+                                      value={vdfState.stiffness || 30}
+                                      onChange={(e) => {
+                                        const newStiffness = Number(e.target.value);
+                                        const origPts = vdfState.origObjectPoints || selectedObject.points;
+                                        const deformedPts = calculateCustomVectorDeformedPoints(origPts, vdfState.nodes, newStiffness);
+                                        updateObject(selectedObject.id, {
+                                          points: deformedPts,
+                                          customVectorDeformState: {
+                                            ...vdfState,
+                                            stiffness: newStiffness
+                                          }
+                                        });
+                                      }}
+                                      className="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                                    />
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                      type="button"
+                                      id="rightpanel-vdf-reset-btn"
+                                      onClick={() => {
+                                        const resetNodes = vdfState.nodes.map(n => ({ ...n, x: n.origX, y: n.origY }));
+                                        const restoredPts = vdfState.origObjectPoints ? JSON.parse(JSON.stringify(vdfState.origObjectPoints)) : selectedObject.points;
+                                        updateObject(selectedObject.id, {
+                                          points: restoredPts,
+                                          customVectorDeformState: {
+                                            ...vdfState,
+                                            nodes: resetNodes
+                                          }
+                                        });
+                                      }}
+                                      className="py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1"
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                      Reset
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      id="rightpanel-vdf-edit-btn"
+                                      onClick={() => {
+                                        updateObject(selectedObject.id, {
+                                          customVectorDeformState: {
+                                            ...vdfState,
+                                            isDrawingPhase: true
+                                          }
+                                        });
+                                      }}
+                                      className="py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                    >
+                                      Add/Edit Points
+                                    </button>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    id="rightpanel-vdf-bake-btn"
+                                    onClick={() => {
+                                      updateObject(selectedObject.id, {
+                                        customVectorDeformState: undefined
+                                      });
+                                    }}
+                                    className="w-full py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold rounded-xl text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                  >
+                                    Bake Permanent Deformation
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>

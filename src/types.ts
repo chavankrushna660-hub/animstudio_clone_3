@@ -313,6 +313,23 @@ export interface VectorObject {
   splineOriginalPoints?: Point[];
   curvePathState?: CurvePathState;
   flexCurveState?: FlexCurveState;
+  customVectorDeformState?: CustomVectorDeformState;
+}
+
+export interface CustomVectorDeformNode {
+  id: string;
+  x: number;
+  y: number;
+  origX: number;
+  origY: number;
+}
+
+export interface CustomVectorDeformState {
+  active: boolean;
+  isDrawingPhase: boolean;
+  nodes: CustomVectorDeformNode[];
+  origObjectPoints?: Point[];
+  stiffness?: number;
 }
 
 export interface FlexCurveControlPoint {

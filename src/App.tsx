@@ -1185,6 +1185,11 @@ export default function App() {
   const lastSyncedObjectsRef = useRef<string>('');
   const isDirtyRef = useRef<boolean>(false);
 
+  const objectsRef = useRef(objects);
+  useEffect(() => {
+    objectsRef.current = objects;
+  }, [objects]);
+
   // Keep a stable reference to the frames array to break the feedback loop during rapid dragging
   const framesRef = useRef(frames);
   useEffect(() => {
@@ -1196,7 +1201,7 @@ export default function App() {
     // 1. If we changed frame index, we MUST load objects from that target frame
     if (currentFrameIndex !== loadedFrameIndexRef.current) {
       const oldFrameIndex = loadedFrameIndexRef.current;
-      const currentObjectsStr = JSON.stringify(objects);
+      const currentObjectsStr = JSON.stringify(objectsRef.current);
 
       // Synchronously save any changes from the frame we are leaving before we load the new frame!
       if (isDirtyRef.current && oldFrameIndex >= 0 && oldFrameIndex < framesRef.current.length) {
@@ -1279,7 +1284,8 @@ export default function App() {
 
       // Debounce updating frames during rapid actions like dragging or drawing to completely eliminate infinite update loops!
       const handler = setTimeout(() => {
-        const checkStr = JSON.stringify(objects);
+        const currentObjects = objectsRef.current;
+        const checkStr = JSON.stringify(currentObjects);
         if (checkStr !== lastSyncedObjectsRef.current) {
           lastSyncedObjectsRef.current = checkStr;
           
@@ -1287,7 +1293,7 @@ export default function App() {
             if (!prev[currentFrameIndex]) return prev;
             const currentFrameObjectsInState = prev[currentFrameIndex].objects || {};
             
-            const currentKeys = Object.keys(objects);
+            const currentKeys = Object.keys(currentObjects);
             const savedKeys = Object.keys(currentFrameObjectsInState);
             
             const addedKeys = currentKeys.filter(k => !savedKeys.includes(k));
