@@ -56,6 +56,7 @@ import {
   extrude2DTo3D
 } from './utils/engine3D';
 import { safeJsonParse } from './utils/securityGuard';
+import { extractPNGSilhouetteContour } from './utils/pngSilhouette';
 
 export function transformDeformPoint(
   orig: { x: number; y: number; z?: number },
@@ -1592,6 +1593,62 @@ export default function App() {
 
       const updatedObj = { ...obj, ...updates };
 
+      // Multi-part drawing one-tap recoloring logic
+      if (updates.fillColor !== undefined) {
+        const newFill = updates.fillColor;
+        if (updatedObj.subPaths && updatedObj.subPaths.length > 0) {
+          const nextSubPathFills: { [subPathIdx: number]: string } = {};
+          updatedObj.subPaths.forEach((_, idx) => {
+            nextSubPathFills[idx] = newFill;
+          });
+          updatedObj.subPathFills = nextSubPathFills;
+        }
+        if (updatedObj.lassoFills && updatedObj.lassoFills.length > 0) {
+          updatedObj.lassoFills = updatedObj.lassoFills.map(lf => ({ ...lf, color: newFill }));
+        }
+      }
+
+      if (updates.strokeColor !== undefined) {
+        const newStroke = updates.strokeColor;
+        if (updatedObj.subPaths && updatedObj.subPaths.length > 0) {
+          const nextSubPathStrokes: { [subPathIdx: number]: { strokeColor?: string; strokeWidth?: number } } = {};
+          updatedObj.subPaths.forEach((_, idx) => {
+            nextSubPathStrokes[idx] = {
+              strokeColor: newStroke,
+              strokeWidth: updatedObj.strokeWidth
+            };
+          });
+          updatedObj.subPathStrokes = nextSubPathStrokes;
+        }
+      }
+
+      // Propagate colors to attached group drawings / multi-part siblings
+      if (obj.attachedGroupId && (updates.fillColor !== undefined || updates.strokeColor !== undefined)) {
+        Object.keys(updated).forEach(k => {
+          if (k !== id && updated[k].attachedGroupId === obj.attachedGroupId) {
+            const sibling = updated[k];
+            const siblingUpdates: Partial<VectorObject> = {};
+            if (updates.fillColor !== undefined) {
+              siblingUpdates.fillColor = updates.fillColor;
+              if (sibling.subPaths && sibling.subPaths.length > 0) {
+                const sFills: { [idx: number]: string } = {};
+                sibling.subPaths.forEach((_, idx) => { sFills[idx] = updates.fillColor!; });
+                siblingUpdates.subPathFills = sFills;
+              }
+            }
+            if (updates.strokeColor !== undefined) {
+              siblingUpdates.strokeColor = updates.strokeColor;
+              if (sibling.subPaths && sibling.subPaths.length > 0) {
+                const sStrokes: { [idx: number]: any } = {};
+                sibling.subPaths.forEach((_, idx) => { sStrokes[idx] = { strokeColor: updates.strokeColor, strokeWidth: sibling.strokeWidth }; });
+                siblingUpdates.subPathStrokes = sStrokes;
+              }
+            }
+            updated[k] = { ...sibling, ...siblingUpdates };
+          }
+        });
+      }
+
       // Automatically update 3D sub-paths if this is a 3D model with 2D subpaths
       if (updatedObj.type === '3d' && updatedObj.subPaths && updatedObj.subPaths.length > 0) {
         const depthVal = updatedObj.depth3D !== undefined ? updatedObj.depth3D : 40;
@@ -1926,22 +1983,48 @@ export default function App() {
       const clickedObj = prev[id];
       if (!clickedObj) return prev;
 
-      const isPathClosedLocal = (obj: VectorObject): boolean => {
-        if (obj.type === 'shape' || obj.type === 'stroke') return true;
-        if (obj.type === 'image') return false;
-        if (!obj.points || obj.points.length < 3) return false;
-        return true;
-      };
-
-      const isClosed = isPathClosedLocal(clickedObj);
       const updated = { ...prev };
 
-      // Strictly apply fill color ONLY to the selected target drawing
-      updated[id] = {
-        ...clickedObj,
-        fillColor: isClosed ? color : clickedObj.fillColor,
-        strokeColor: !isClosed ? color : clickedObj.strokeColor
+      const updateSingleObjColor = (targetId: string, targetObj: VectorObject) => {
+        const isPathClosedLocal = (o: VectorObject): boolean => {
+          if (o.type === 'shape' || o.type === 'stroke') return true;
+          if (o.type === 'image') return false;
+          if (!o.points || o.points.length < 3) return false;
+          return true;
+        };
+        const isClosed = isPathClosedLocal(targetObj);
+        const newFill = isClosed ? color : targetObj.fillColor;
+        const newStroke = !isClosed ? color : targetObj.strokeColor;
+
+        const subFills: { [subPathIdx: number]: string } = {};
+        const subStrokes: { [subPathIdx: number]: { strokeColor?: string; strokeWidth?: number } } = {};
+        if (targetObj.subPaths && targetObj.subPaths.length > 0) {
+          targetObj.subPaths.forEach((_, idx) => {
+            subFills[idx] = newFill;
+            subStrokes[idx] = { strokeColor: newStroke, strokeWidth: targetObj.strokeWidth };
+          });
+        }
+
+        return {
+          ...targetObj,
+          fillColor: newFill,
+          strokeColor: newStroke,
+          subPathFills: Object.keys(subFills).length > 0 ? subFills : targetObj.subPathFills,
+          subPathStrokes: Object.keys(subStrokes).length > 0 ? subStrokes : targetObj.subPathStrokes,
+          lassoFills: targetObj.lassoFills ? targetObj.lassoFills.map(lf => ({ ...lf, color: newFill })) : targetObj.lassoFills
+        };
       };
+
+      updated[id] = updateSingleObjColor(id, clickedObj);
+
+      // Apply color to all attached group drawings in one tap
+      if (clickedObj.attachedGroupId) {
+        Object.keys(updated).forEach(k => {
+          if (k !== id && updated[k].attachedGroupId === clickedObj.attachedGroupId) {
+            updated[k] = updateSingleObjColor(k, updated[k]);
+          }
+        });
+      }
 
       return updated;
     });
@@ -2643,16 +2726,36 @@ export default function App() {
     incrementDailyLimit(email);
 
     let pointsToExtrude = obj.points;
-    if ((obj.type === 'image' || obj.imageUrl) && (!pointsToExtrude || pointsToExtrude.length < 2)) {
+    if (obj.type === 'image' || obj.imageUrl) {
       const w = obj.transform?.width || 200;
       const h = obj.transform?.height || 200;
-      pointsToExtrude = [
-        { x: -w / 2, y: -h / 2 },
-        { x: w / 2, y: -h / 2 },
-        { x: w / 2, y: h / 2 },
-        { x: -w / 2, y: h / 2 },
-        { x: -w / 2, y: -h / 2 }
-      ];
+      let cachedImg = (obj as any)._cachedImg as HTMLImageElement | undefined;
+      if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
+        const contour = extractPNGSilhouetteContour(cachedImg, w, h);
+        if (contour && contour.length > 2) {
+          pointsToExtrude = contour;
+        }
+      } else if (obj.imageUrl) {
+        const tempImg = new Image();
+        tempImg.crossOrigin = 'anonymous';
+        tempImg.src = obj.imageUrl;
+        if (tempImg.complete && tempImg.naturalWidth > 0) {
+          const contour = extractPNGSilhouetteContour(tempImg, w, h);
+          if (contour && contour.length > 2) {
+            pointsToExtrude = contour;
+          }
+        }
+      }
+
+      if (!pointsToExtrude || pointsToExtrude.length < 2) {
+        pointsToExtrude = [
+          { x: -w / 2, y: -h / 2 },
+          { x: w / 2, y: -h / 2 },
+          { x: w / 2, y: h / 2 },
+          { x: -w / 2, y: h / 2 },
+          { x: -w / 2, y: -h / 2 }
+        ];
+      }
     }
 
     // Run extrusion algorithm
@@ -2991,35 +3094,42 @@ export default function App() {
     reader.onload = (event) => {
       const url = event.target?.result as string;
       const imgId = `obj_png_${Date.now()}`;
-      
-      const newObj: VectorObject = {
-        id: imgId,
-        name: `untitledPNG_${Object.keys(objects).length + 1}`,
-        type: 'image',
-        points: [
-          { x: 100, y: 100 },
-          { x: 300, y: 100 },
-          { x: 300, y: 300 },
-          { x: 100, y: 300 },
-          { x: 100, y: 100 }
-        ],
-        strokeColor: 'transparent',
-        strokeWidth: 0,
-        fillColor: 'transparent',
-        opacity: 1,
-        transform: { x: 200, y: 150, rotation: 0, scaleX: 1, scaleY: 1 },
-        pivots: [{ id: `pvt_${Date.now()}_img`, name: 'BaseJoint', localX: 200, localY: 200, locked: false }],
-        parentId: null,
-        childrenIds: [],
-        layerId: activeLayerId,
-        imageUrl: url,
-        isLocked: false,
-        isHidden: false,
-      };
 
-      setObjects(prev => ({ ...prev, [imgId]: newObj }));
-      setSelectedObjectId(imgId);
-      historyPush();
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const contour = extractPNGSilhouetteContour(img, 200, 200);
+        const newObj: VectorObject = {
+          id: imgId,
+          name: `untitledPNG_${Object.keys(objects).length + 1}`,
+          type: 'image',
+          points: contour && contour.length > 2 ? contour : [
+            { x: -100, y: -100 },
+            { x: 100, y: -100 },
+            { x: 100, y: 100 },
+            { x: -100, y: 100 },
+            { x: -100, y: -100 }
+          ],
+          strokeColor: 'transparent',
+          strokeWidth: 0,
+          fillColor: 'transparent',
+          opacity: 1,
+          transform: { x: 200, y: 150, rotation: 0, scaleX: 1, scaleY: 1, width: 200, height: 200 },
+          pivots: [{ id: `pvt_${Date.now()}_img`, name: 'BaseJoint', localX: 0, localY: 0, locked: false }],
+          parentId: null,
+          childrenIds: [],
+          layerId: activeLayerId,
+          imageUrl: url,
+          isLocked: false,
+          isHidden: false,
+        };
+        (newObj as any)._cachedImg = img;
+
+        setObjects(prev => ({ ...prev, [imgId]: newObj }));
+        setSelectedObjectId(imgId);
+        historyPush();
+      };
+      img.src = url;
     };
     reader.readAsDataURL(file);
   };
